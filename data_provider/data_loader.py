@@ -1,3 +1,12 @@
+# 时间序列数据加载器模块
+# 包含多种数据集的数据加载类，用于时间序列预测和异常检测任务
+# 支持的数据集类型：
+# 1. ETT数据集（小时级和分钟级）- 电力变压器温度预测
+# 2. 自定义数据集 - 用户自定义时间序列数据
+# 3. M4竞赛数据集 - 时间序列预测竞赛数据
+# 4. 异常检测数据集（PSM, MSL, SMAP, SMD, SWAT）- 各种领域的异常检测
+# 5. UEA时间序列分类数据集 - 时间序列分类任务
+
 import os
 import numpy as np
 import pandas as pd
@@ -17,84 +26,135 @@ warnings.filterwarnings('ignore')
 
 
 class Dataset_ETT_hour(Dataset):
+    """
+    ETT小时级数据集加载器
+    用于加载ETT (Electricity Transformer Temperature) 小时级数据
+    
+    参数:
+        args: 配置参数对象
+        root_path: 数据根目录路径
+        flag: 数据集类型 ('train', 'val', 'test')
+        size: 序列参数 [seq_len, label_len, pred_len]
+        features: 特征类型 ('S'单变量, 'M'多变量, 'MS'多变量+单变量)
+        data_path: 数据文件名
+        target: 目标变量名
+        scale: 是否进行标准化
+        timeenc: 时间编码方式 (0:简单编码, 1:复杂编码)
+        freq: 数据频率
+        seasonal_patterns: 季节性模式（此参数在此类中未使用）
+    """
     def __init__(self, args, root_path, flag='train', size=None,
                  features='S', data_path='ETTh1.csv',
                  target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None):
-        # size [seq_len, label_len, pred_len]
+        # size [seq_len, label_len, pred_len] - 序列长度、标签长度、预测长度
         self.args = args
-        # info
+        # 设置默认参数
         if size == None:
-            self.seq_len = 24 * 4 * 4
-            self.label_len = 24 * 4
-            self.pred_len = 24 * 4
+            self.seq_len = 24 * 4 * 4  # 默认序列长度：24小时 * 4 * 4 = 384
+            self.label_len = 24 * 4    # 默认标签长度：24小时 * 4 = 96
+            self.pred_len = 24 * 4     # 默认预测长度：24小时 * 4 = 96
         else:
             self.seq_len = size[0]
             self.label_len = size[1]
             self.pred_len = size[2]
-        # init
-        assert flag in ['train', 'test', 'val']
-        type_map = {'train': 0, 'val': 1, 'test': 2}
+        # 初始化
+        assert flag in ['train', 'test', 'val']  # 确保flag参数有效
+        type_map = {'train': 0, 'val': 1, 'test': 2}  # 数据集类型映射
         self.set_type = type_map[flag]
 
-        self.features = features
-        self.target = target
-        self.scale = scale
-        self.timeenc = timeenc
-        self.freq = freq
+        self.features = features  # 特征类型：'S'单变量，'M'多变量
+        self.target = target      # 目标变量名
+        self.scale = scale        # 是否进行标准化
+        self.timeenc = timeenc    # 时间编码方式：0-简单编码，1-复杂编码
+        self.freq = freq          # 数据频率
 
-        self.root_path = root_path
-        self.data_path = data_path
-        self.__read_data__()
+        self.root_path = root_path    # 数据根路径
+        self.data_path = data_path    # 数据文件路径
+        self.__read_data__()          # 读取数据
 
     def __read_data__(self):
-        self.scaler = StandardScaler()
+        """
+        读取和预处理数据
+        
+        处理步骤：
+        1. 读取CSV文件
+        2. 根据数据集类型划分数据边界
+        3. 选择特征列（单变量或多变量）
+        4. 数据标准化
+        5. 时间特征提取
+        6. 数据增强（仅训练集）
+        """
+        self.scaler = StandardScaler()  # 标准化器
+        # 读取CSV文件
         df_raw = pd.read_csv(os.path.join(self.root_path,
                                           self.data_path))
 
+        # 定义数据集边界（训练集、验证集、测试集）
+        # 数据按时间顺序排列，前12个月为训练集，接下来4个月为验证集，最后4个月为测试集
         border1s = [0, 12 * 30 * 24 - self.seq_len, 12 * 30 * 24 + 4 * 30 * 24 - self.seq_len]
         border2s = [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24]
         border1 = border1s[self.set_type]
         border2 = border2s[self.set_type]
 
+        # 根据特征类型选择数据列
         if self.features == 'M' or self.features == 'MS':
-            cols_data = df_raw.columns[1:]
+            cols_data = df_raw.columns[1:]  # 多变量：除日期外的所有列
             df_data = df_raw[cols_data]
         elif self.features == 'S':
-            df_data = df_raw[[self.target]]
+            df_data = df_raw[[self.target]]  # 单变量：只选择目标列
 
+        # 数据标准化处理
         if self.scale:
-            train_data = df_data[border1s[0]:border2s[0]]
+            train_data = df_data[border1s[0]:border2s[0]]  # 使用训练集数据拟合标准化器
             self.scaler.fit(train_data.values)
             data = self.scaler.transform(df_data.values)
         else:
             data = df_data.values
 
+        # 时间特征处理
         df_stamp = df_raw[['date']][border1:border2]
         df_stamp['date'] = pd.to_datetime(df_stamp.date)
         if self.timeenc == 0:
+            # 简单时间编码：提取月、日、星期、小时信息
             df_stamp['month'] = df_stamp.date.apply(lambda row: row.month, 1)
             df_stamp['day'] = df_stamp.date.apply(lambda row: row.day, 1)
             df_stamp['weekday'] = df_stamp.date.apply(lambda row: row.weekday(), 1)
             df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
             data_stamp = df_stamp.drop(['date'], 1).values
         elif self.timeenc == 1:
+            # 复杂时间编码：使用time_features函数
             data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
             data_stamp = data_stamp.transpose(1, 0) 
 
+        # 存储处理后的数据
         self.data_x = data[border1:border2]
         self.data_y = data[border1:border2]
 
+        # 数据增强（仅对训练集）
         if self.set_type == 0 and self.args.augmentation_ratio > 0:
             self.data_x, self.data_y, augmentation_tags = run_augmentation_single(self.data_x, self.data_y, self.args)
 
         self.data_stamp = data_stamp
 
     def __getitem__(self, index):
+        """
+        获取单个样本
+        
+        参数:
+            index: 样本索引
+            
+        返回:
+            seq_x: 输入序列数据
+            seq_y: 目标序列数据
+            seq_x_mark: 输入序列的时间特征
+            seq_y_mark: 目标序列的时间特征
+        """
         s_begin = index
         s_end = s_begin + self.seq_len
         r_begin = s_end - self.label_len
         r_end = r_begin + self.label_len + self.pred_len
 
+        # 提取输入序列和目标序列
         seq_x = self.data_x[s_begin:s_end]
         seq_y = self.data_y[r_begin:r_end]
         seq_x_mark = self.data_stamp[s_begin:s_end]
@@ -103,19 +163,33 @@ class Dataset_ETT_hour(Dataset):
         return seq_x, seq_y, seq_x_mark, seq_y_mark
 
     def __len__(self):
+        """返回数据集长度"""
         return len(self.data_x) - self.seq_len - self.pred_len + 1
 
     def inverse_transform(self, data):
+        """
+        逆变换：将标准化数据转换回原始尺度
+        
+        参数:
+            data: 标准化后的数据
+            
+        返回:
+            原始尺度的数据
+        """
         return self.scaler.inverse_transform(data)
 
 
 class Dataset_ETT_minute(Dataset):
+    """
+    ETT分钟级数据集加载器
+    用于加载ETT分钟级数据，处理逻辑与小时级类似
+    """
     def __init__(self, args, root_path, flag='train', size=None,
                  features='S', data_path='ETTm1.csv',
                  target='OT', scale=True, timeenc=0, freq='t', seasonal_patterns=None):
         # size [seq_len, label_len, pred_len]
         self.args = args
-        # info
+        # 设置默认参数
         if size == None:
             self.seq_len = 24 * 4 * 4
             self.label_len = 24 * 4
@@ -124,7 +198,7 @@ class Dataset_ETT_minute(Dataset):
             self.seq_len = size[0]
             self.label_len = size[1]
             self.pred_len = size[2]
-        # init
+        # 初始化
         assert flag in ['train', 'test', 'val']
         type_map = {'train': 0, 'val': 1, 'test': 2}
         self.set_type = type_map[flag]
@@ -140,21 +214,25 @@ class Dataset_ETT_minute(Dataset):
         self.__read_data__()
 
     def __read_data__(self):
+        """读取和预处理分钟级数据"""
         self.scaler = StandardScaler()
         df_raw = pd.read_csv(os.path.join(self.root_path,
                                           self.data_path))
 
+        # 分钟级数据的边界设置（时间间隔更小）
         border1s = [0, 12 * 30 * 24 * 4 - self.seq_len, 12 * 30 * 24 * 4 + 4 * 30 * 24 * 4 - self.seq_len]
         border2s = [12 * 30 * 24 * 4, 12 * 30 * 24 * 4 + 4 * 30 * 24 * 4, 12 * 30 * 24 * 4 + 8 * 30 * 24 * 4]
         border1 = border1s[self.set_type]
         border2 = border2s[self.set_type]
 
+        # 特征选择
         if self.features == 'M' or self.features == 'MS':
             cols_data = df_raw.columns[1:]
             df_data = df_raw[cols_data]
         elif self.features == 'S':
             df_data = df_raw[[self.target]]
 
+        # 数据标准化
         if self.scale:
             train_data = df_data[border1s[0]:border2s[0]]
             self.scaler.fit(train_data.values)
@@ -162,6 +240,7 @@ class Dataset_ETT_minute(Dataset):
         else:
             data = df_data.values
 
+        # 时间特征处理（包含分钟信息）
         df_stamp = df_raw[['date']][border1:border2]
         df_stamp['date'] = pd.to_datetime(df_stamp.date)
         if self.timeenc == 0:
@@ -170,21 +249,24 @@ class Dataset_ETT_minute(Dataset):
             df_stamp['weekday'] = df_stamp.date.apply(lambda row: row.weekday(), 1)
             df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
             df_stamp['minute'] = df_stamp.date.apply(lambda row: row.minute, 1)
-            df_stamp['minute'] = df_stamp.minute.map(lambda x: x // 15)
+            df_stamp['minute'] = df_stamp.minute.map(lambda x: x // 15)  # 将分钟按15分钟分组
             data_stamp = df_stamp.drop(['date'], 1).values
         elif self.timeenc == 1:
             data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
             data_stamp = data_stamp.transpose(1, 0)
 
+        # 存储数据
         self.data_x = data[border1:border2]
         self.data_y = data[border1:border2]
 
+        # 数据增强
         if self.set_type == 0 and self.args.augmentation_ratio > 0:
             self.data_x, self.data_y, augmentation_tags = run_augmentation_single(self.data_x, self.data_y, self.args)
 
         self.data_stamp = data_stamp
 
     def __getitem__(self, index):
+        """获取单个样本"""
         s_begin = index
         s_end = s_begin + self.seq_len
         r_begin = s_end - self.label_len
@@ -198,19 +280,25 @@ class Dataset_ETT_minute(Dataset):
         return seq_x, seq_y, seq_x_mark, seq_y_mark
 
     def __len__(self):
+        """返回数据集长度"""
         return len(self.data_x) - self.seq_len - self.pred_len + 1
 
     def inverse_transform(self, data):
+        """逆变换"""
         return self.scaler.inverse_transform(data)
 
 
 class Dataset_Custom(Dataset):
+    """
+    自定义数据集加载器
+    用于加载用户自定义的时间序列数据
+    """
     def __init__(self, args, root_path, flag='train', size=None,
                  features='S', data_path='ETTh1.csv',
                  target='OT', scale=True, timeenc=0, freq='h', seasonal_patterns=None):
         # size [seq_len, label_len, pred_len]
         self.args = args
-        # info
+        # 设置默认参数
         if size == None:
             self.seq_len = 24 * 4 * 4
             self.label_len = 24 * 4
@@ -219,7 +307,7 @@ class Dataset_Custom(Dataset):
             self.seq_len = size[0]
             self.label_len = size[1]
             self.pred_len = size[2]
-        # init
+        # 初始化
         assert flag in ['train', 'test', 'val']
         type_map = {'train': 0, 'val': 1, 'test': 2}
         self.set_type = type_map[flag]
@@ -235,17 +323,18 @@ class Dataset_Custom(Dataset):
         self.__read_data__()
 
     def __read_data__(self):
+        """读取和预处理自定义数据"""
         self.scaler = StandardScaler()
         df_raw = pd.read_csv(os.path.join(self.root_path,
                                           self.data_path))
 
-        '''
-        df_raw.columns: ['date', ...(other features), target feature]
-        '''
+        # 重新排列列顺序：日期列在前，目标列在最后
         cols = list(df_raw.columns)
         cols.remove(self.target)
         cols.remove('date')
         df_raw = df_raw[['date'] + cols + [self.target]]
+        
+        # 自定义数据集分割比例：70%训练，20%测试，10%验证
         num_train = int(len(df_raw) * 0.7)
         num_test = int(len(df_raw) * 0.2)
         num_vali = len(df_raw) - num_train - num_test
@@ -254,12 +343,14 @@ class Dataset_Custom(Dataset):
         border1 = border1s[self.set_type]
         border2 = border2s[self.set_type]
 
+        # 特征选择
         if self.features == 'M' or self.features == 'MS':
             cols_data = df_raw.columns[1:]
             df_data = df_raw[cols_data]
         elif self.features == 'S':
             df_data = df_raw[[self.target]]
 
+        # 数据标准化
         if self.scale:
             train_data = df_data[border1s[0]:border2s[0]]
             self.scaler.fit(train_data.values)
@@ -267,6 +358,7 @@ class Dataset_Custom(Dataset):
         else:
             data = df_data.values
 
+        # 时间特征处理
         df_stamp = df_raw[['date']][border1:border2]
         df_stamp['date'] = pd.to_datetime(df_stamp.date)
         if self.timeenc == 0:
@@ -279,15 +371,18 @@ class Dataset_Custom(Dataset):
             data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
             data_stamp = data_stamp.transpose(1, 0)
 
+        # 存储数据
         self.data_x = data[border1:border2]
         self.data_y = data[border1:border2]
 
+        # 数据增强
         if self.set_type == 0 and self.args.augmentation_ratio > 0:
             self.data_x, self.data_y, augmentation_tags = run_augmentation_single(self.data_x, self.data_y, self.args)
 
         self.data_stamp = data_stamp
 
     def __getitem__(self, index):
+        """获取单个样本"""
         s_begin = index
         s_end = s_begin + self.seq_len
         r_begin = s_end - self.label_len
@@ -301,19 +396,25 @@ class Dataset_Custom(Dataset):
         return seq_x, seq_y, seq_x_mark, seq_y_mark
 
     def __len__(self):
+        """返回数据集长度"""
         return len(self.data_x) - self.seq_len - self.pred_len + 1
 
     def inverse_transform(self, data):
+        """逆变换"""
         return self.scaler.inverse_transform(data)
 
 
 class Dataset_M4(Dataset):
+    """
+    M4竞赛数据集加载器
+    用于加载M4时间序列预测竞赛的数据
+    """
     def __init__(self, args, root_path, flag='pred', size=None,
                  features='S', data_path='ETTh1.csv',
                  target='OT', scale=False, inverse=False, timeenc=0, freq='15min',
                  seasonal_patterns='Yearly'):
         # size [seq_len, label_len, pred_len]
-        # init
+        # 初始化
         self.features = features
         self.target = target
         self.scale = scale
@@ -325,39 +426,48 @@ class Dataset_M4(Dataset):
         self.label_len = size[1]
         self.pred_len = size[2]
 
-        self.seasonal_patterns = seasonal_patterns
-        self.history_size = M4Meta.history_size[seasonal_patterns]
-        self.window_sampling_limit = int(self.history_size * self.pred_len)
+        # M4数据集特定参数
+        self.seasonal_patterns = seasonal_patterns  # 季节性模式
+        self.history_size = M4Meta.history_size[seasonal_patterns]  # 历史数据大小
+        self.window_sampling_limit = int(self.history_size * self.pred_len)  # 窗口采样限制
         self.flag = flag
 
         self.__read_data__()
 
     def __read_data__(self):
+        """读取M4数据集"""
         # M4Dataset.initialize()
         if self.flag == 'train':
             dataset = M4Dataset.load(training=True, dataset_file=self.root_path)
         else:
             dataset = M4Dataset.load(training=False, dataset_file=self.root_path)
+        # 处理不同频率的时间序列数据
         training_values = np.array(
             [v[~np.isnan(v)] for v in
-             dataset.values[dataset.groups == self.seasonal_patterns]])  # split different frequencies
+             dataset.values[dataset.groups == self.seasonal_patterns]])
         self.ids = np.array([i for i in dataset.ids[dataset.groups == self.seasonal_patterns]])
         self.timeseries = [ts for ts in training_values]
 
     def __getitem__(self, index):
+        """获取单个样本"""
+        # 初始化输入和输出数组
         insample = np.zeros((self.seq_len, 1))
         insample_mask = np.zeros((self.seq_len, 1))
         outsample = np.zeros((self.pred_len + self.label_len, 1))
-        outsample_mask = np.zeros((self.pred_len + self.label_len, 1))  # m4 dataset
+        outsample_mask = np.zeros((self.pred_len + self.label_len, 1))
 
+        # 随机采样时间序列片段
         sampled_timeseries = self.timeseries[index]
         cut_point = np.random.randint(low=max(1, len(sampled_timeseries) - self.window_sampling_limit),
                                       high=len(sampled_timeseries),
                                       size=1)[0]
 
+        # 构建输入样本
         insample_window = sampled_timeseries[max(0, cut_point - self.seq_len):cut_point]
         insample[-len(insample_window):, 0] = insample_window
         insample_mask[-len(insample_window):, 0] = 1.0
+        
+        # 构建输出样本
         outsample_window = sampled_timeseries[
                            max(0, cut_point - self.label_len):min(len(sampled_timeseries), cut_point + self.pred_len)]
         outsample[:len(outsample_window), 0] = outsample_window
@@ -365,17 +475,17 @@ class Dataset_M4(Dataset):
         return insample, outsample, insample_mask, outsample_mask
 
     def __len__(self):
+        """返回数据集长度"""
         return len(self.timeseries)
 
     def inverse_transform(self, data):
+        """逆变换（M4数据集通常不需要）"""
         return self.scaler.inverse_transform(data)
 
     def last_insample_window(self):
         """
-        The last window of insample size of all timeseries.
-        This function does not support batching and does not reshuffle timeseries.
-
-        :return: Last insample window of all timeseries. Shape "timeseries, insample size"
+        获取所有时间序列的最后一个输入窗口
+        此函数不支持批处理，也不会重新打乱时间序列
         """
         insample = np.zeros((len(self.timeseries), self.seq_len))
         insample_mask = np.zeros((len(self.timeseries), self.seq_len))
@@ -387,28 +497,41 @@ class Dataset_M4(Dataset):
 
 
 class PSMSegLoader(Dataset):
+    """
+    PSM (Pooled Server Metrics) 异常检测数据集加载器
+    用于服务器性能监控数据的异常检测
+    """
     def __init__(self, args, root_path, win_size, step=1, flag="train"):
         self.flag = flag
         self.step = step
         self.win_size = win_size
         self.scaler = StandardScaler()
+        
+        # 读取训练数据
         data = pd.read_csv(os.path.join(root_path, 'train.csv'))
-        data = data.values[:, 1:]
-        data = np.nan_to_num(data)
+        data = data.values[:, 1:]  # 去除第一列（可能是索引）
+        data = np.nan_to_num(data)  # 将NaN值替换为0
         self.scaler.fit(data)
         data = self.scaler.transform(data)
+        
+        # 读取测试数据
         test_data = pd.read_csv(os.path.join(root_path, 'test.csv'))
         test_data = test_data.values[:, 1:]
         test_data = np.nan_to_num(test_data)
         self.test = self.scaler.transform(test_data)
         self.train = data
+        
+        # 划分验证集
         data_len = len(self.train)
         self.val = self.train[(int)(data_len * 0.8):]
+        
+        # 读取测试标签
         self.test_labels = pd.read_csv(os.path.join(root_path, 'test_label.csv')).values[:, 1:]
         print("test:", self.test.shape)
         print("train:", self.train.shape)
 
     def __len__(self):
+        """返回数据集长度"""
         if self.flag == "train":
             return (self.train.shape[0] - self.win_size) // self.step + 1
         elif (self.flag == 'val'):
@@ -419,6 +542,7 @@ class PSMSegLoader(Dataset):
             return (self.test.shape[0] - self.win_size) // self.win_size + 1
 
     def __getitem__(self, index):
+        """获取单个样本"""
         index = index * self.step
         if self.flag == "train":
             return np.float32(self.train[index:index + self.win_size]), np.float32(self.test_labels[0:self.win_size])
@@ -434,24 +558,37 @@ class PSMSegLoader(Dataset):
 
 
 class MSLSegLoader(Dataset):
+    """
+    MSL (Mars Science Laboratory) 异常检测数据集加载器
+    用于NASA火星科学实验室数据的异常检测
+    """
     def __init__(self, args, root_path, win_size, step=1, flag="train"):
         self.flag = flag
         self.step = step
         self.win_size = win_size
         self.scaler = StandardScaler()
+        
+        # 读取训练数据（numpy格式）
         data = np.load(os.path.join(root_path, "MSL_train.npy"))
         self.scaler.fit(data)
         data = self.scaler.transform(data)
+        
+        # 读取测试数据
         test_data = np.load(os.path.join(root_path, "MSL_test.npy"))
         self.test = self.scaler.transform(test_data)
         self.train = data
+        
+        # 划分验证集
         data_len = len(self.train)
         self.val = self.train[(int)(data_len * 0.8):]
+        
+        # 读取测试标签
         self.test_labels = np.load(os.path.join(root_path, "MSL_test_label.npy"))
         print("test:", self.test.shape)
         print("train:", self.train.shape)
 
     def __len__(self):
+        """返回数据集长度"""
         if self.flag == "train":
             return (self.train.shape[0] - self.win_size) // self.step + 1
         elif (self.flag == 'val'):
@@ -462,6 +599,7 @@ class MSLSegLoader(Dataset):
             return (self.test.shape[0] - self.win_size) // self.win_size + 1
 
     def __getitem__(self, index):
+        """获取单个样本"""
         index = index * self.step
         if self.flag == "train":
             return np.float32(self.train[index:index + self.win_size]), np.float32(self.test_labels[0:self.win_size])
@@ -477,25 +615,37 @@ class MSLSegLoader(Dataset):
 
 
 class SMAPSegLoader(Dataset):
+    """
+    SMAP (Soil Moisture Active Passive) 异常检测数据集加载器
+    用于土壤湿度主动被动卫星数据的异常检测
+    """
     def __init__(self, args, root_path, win_size, step=1, flag="train"):
         self.flag = flag
         self.step = step
         self.win_size = win_size
         self.scaler = StandardScaler()
+        
+        # 读取训练数据
         data = np.load(os.path.join(root_path, "SMAP_train.npy"))
         self.scaler.fit(data)
         data = self.scaler.transform(data)
+        
+        # 读取测试数据
         test_data = np.load(os.path.join(root_path, "SMAP_test.npy"))
         self.test = self.scaler.transform(test_data)
         self.train = data
+        
+        # 划分验证集
         data_len = len(self.train)
         self.val = self.train[(int)(data_len * 0.8):]
+        
+        # 读取测试标签
         self.test_labels = np.load(os.path.join(root_path, "SMAP_test_label.npy"))
         print("test:", self.test.shape)
         print("train:", self.train.shape)
 
     def __len__(self):
-
+        """返回数据集长度"""
         if self.flag == "train":
             return (self.train.shape[0] - self.win_size) // self.step + 1
         elif (self.flag == 'val'):
@@ -506,6 +656,7 @@ class SMAPSegLoader(Dataset):
             return (self.test.shape[0] - self.win_size) // self.win_size + 1
 
     def __getitem__(self, index):
+        """获取单个样本"""
         index = index * self.step
         if self.flag == "train":
             return np.float32(self.train[index:index + self.win_size]), np.float32(self.test_labels[0:self.win_size])
@@ -521,22 +672,35 @@ class SMAPSegLoader(Dataset):
 
 
 class SMDSegLoader(Dataset):
+    """
+    SMD (Server Machine Dataset) 异常检测数据集加载器
+    用于服务器机器数据的异常检测
+    """
     def __init__(self, args, root_path, win_size, step=100, flag="train"):
         self.flag = flag
         self.step = step
         self.win_size = win_size
         self.scaler = StandardScaler()
+        
+        # 读取训练数据
         data = np.load(os.path.join(root_path, "SMD_train.npy"))
         self.scaler.fit(data)
         data = self.scaler.transform(data)
+        
+        # 读取测试数据
         test_data = np.load(os.path.join(root_path, "SMD_test.npy"))
         self.test = self.scaler.transform(test_data)
         self.train = data
+        
+        # 划分验证集
         data_len = len(self.train)
         self.val = self.train[(int)(data_len * 0.8):]
+        
+        # 读取测试标签
         self.test_labels = np.load(os.path.join(root_path, "SMD_test_label.npy"))
 
     def __len__(self):
+        """返回数据集长度"""
         if self.flag == "train":
             return (self.train.shape[0] - self.win_size) // self.step + 1
         elif (self.flag == 'val'):
@@ -547,6 +711,7 @@ class SMDSegLoader(Dataset):
             return (self.test.shape[0] - self.win_size) // self.win_size + 1
 
     def __getitem__(self, index):
+        """获取单个样本"""
         index = index * self.step
         if self.flag == "train":
             return np.float32(self.train[index:index + self.win_size]), np.float32(self.test_labels[0:self.win_size])
@@ -562,23 +727,31 @@ class SMDSegLoader(Dataset):
 
 
 class SWATSegLoader(Dataset):
+    """
+    SWAT (Secure Water Treatment) 异常检测数据集加载器
+    用于安全水处理系统数据的异常检测
+    """
     def __init__(self, args, root_path, win_size, step=1, flag="train"):
         self.flag = flag
         self.step = step
         self.win_size = win_size
         self.scaler = StandardScaler()
 
+        # 读取训练和测试数据
         train_data = pd.read_csv(os.path.join(root_path, 'swat_train2.csv'))
         test_data = pd.read_csv(os.path.join(root_path, 'swat2.csv'))
-        labels = test_data.values[:, -1:]
-        train_data = train_data.values[:, :-1]
-        test_data = test_data.values[:, :-1]
+        labels = test_data.values[:, -1:]  # 最后一列是标签
+        train_data = train_data.values[:, :-1]  # 训练数据不包含标签
+        test_data = test_data.values[:, :-1]  # 测试数据不包含标签
 
+        # 数据标准化
         self.scaler.fit(train_data)
         train_data = self.scaler.transform(train_data)
         test_data = self.scaler.transform(test_data)
         self.train = train_data
         self.test = test_data
+        
+        # 划分验证集
         data_len = len(self.train)
         self.val = self.train[(int)(data_len * 0.8):]
         self.test_labels = labels
@@ -586,9 +759,7 @@ class SWATSegLoader(Dataset):
         print("train:", self.train.shape)
 
     def __len__(self):
-        """
-        Number of images in the object dataset.
-        """
+        """返回数据集长度"""
         if self.flag == "train":
             return (self.train.shape[0] - self.win_size) // self.step + 1
         elif (self.flag == 'val'):
@@ -599,6 +770,7 @@ class SWATSegLoader(Dataset):
             return (self.test.shape[0] - self.win_size) // self.win_size + 1
 
     def __getitem__(self, index):
+        """获取单个样本"""
         index = index * self.step
         if self.flag == "train":
             return np.float32(self.train[index:index + self.win_size]), np.float32(self.test_labels[0:self.win_size])
@@ -615,59 +787,61 @@ class SWATSegLoader(Dataset):
 
 class UEAloader(Dataset):
     """
-    Dataset class for datasets included in:
-        Time Series Classification Archive (www.timeseriesclassification.com)
-    Argument:
-        limit_size: float in (0, 1) for debug
-    Attributes:
-        all_df: (num_samples * seq_len, num_columns) dataframe indexed by integer indices, with multiple rows corresponding to the same index (sample).
-            Each row is a time step; Each column contains either metadata (e.g. timestamp) or a feature.
-        feature_df: (num_samples * seq_len, feat_dim) dataframe; contains the subset of columns of `all_df` which correspond to selected features
-        feature_names: names of columns contained in `feature_df` (same as feature_df.columns)
-        all_IDs: (num_samples,) series of IDs contained in `all_df`/`feature_df` (same as all_df.index.unique() )
-        labels_df: (num_samples, num_labels) pd.DataFrame of label(s) for each sample
-        max_seq_len: maximum sequence (time series) length. If None, script argument `max_seq_len` will be used.
-            (Moreover, script argument overrides this attribute)
+    UEA时间序列分类数据集加载器
+    用于加载UEA时间序列分类档案中的数据集
+    参数:
+        limit_size: float in (0, 1) 用于调试的限制大小
+    属性:
+        all_df: (num_samples * seq_len, num_columns) 数据框，按整数索引索引，多个行对应同一索引（样本）
+            每行是一个时间步；每列包含元数据（如时间戳）或特征
+        feature_df: (num_samples * seq_len, feat_dim) 数据框；包含all_df中对应选定特征的列子集
+        feature_names: feature_df中包含的列名（与feature_df.columns相同）
+        all_IDs: (num_samples,) all_df/feature_df中包含的ID序列（与all_df.index.unique()相同）
+        labels_df: (num_samples, num_labels) 每个样本标签的pd.DataFrame
+        max_seq_len: 最大序列（时间序列）长度。如果为None，将使用脚本参数max_seq_len
+            （此外，脚本参数会覆盖此属性）
     """
 
     def __init__(self, args, root_path, file_list=None, limit_size=None, flag=None):
         self.args = args
         self.root_path = root_path
         self.flag = flag
+        # 加载所有数据
         self.all_df, self.labels_df = self.load_all(root_path, file_list=file_list, flag=flag)
-        self.all_IDs = self.all_df.index.unique()  # all sample IDs (integer indices 0 ... num_samples-1)
+        self.all_IDs = self.all_df.index.unique()  # 所有样本ID（整数索引0 ... num_samples-1）
 
+        # 限制数据集大小（用于调试）
         if limit_size is not None:
             if limit_size > 1:
                 limit_size = int(limit_size)
-            else:  # interpret as proportion if in (0, 1]
+            else:  # 如果在(0, 1]中，解释为比例
                 limit_size = int(limit_size * len(self.all_IDs))
             self.all_IDs = self.all_IDs[:limit_size]
             self.all_df = self.all_df.loc[self.all_IDs]
 
-        # use all features
+        # 使用所有特征
         self.feature_names = self.all_df.columns
         self.feature_df = self.all_df
 
-        # pre_process
+        # 预处理
         normalizer = Normalizer()
         self.feature_df = normalizer.normalize(self.feature_df)
         print(len(self.all_IDs))
 
     def load_all(self, root_path, file_list=None, flag=None):
         """
-        Loads datasets from ts files contained in `root_path` into a dataframe, optionally choosing from `pattern`
-        Args:
-            root_path: directory containing all individual .ts files
-            file_list: optionally, provide a list of file paths within `root_path` to consider.
-                Otherwise, entire `root_path` contents will be used.
-        Returns:
-            all_df: a single (possibly concatenated) dataframe with all data corresponding to specified files
-            labels_df: dataframe containing label(s) for each sample
+        将root_path中包含的ts文件中的数据集加载到数据框中，可选择从pattern中选择
+        参数:
+            root_path: 包含所有单个.ts文件的目录
+            file_list: 可选地，提供root_path内要考虑的文件路径列表
+                否则，将使用整个root_path内容
+        返回:
+            all_df: 包含指定文件对应所有数据的单个（可能连接的）数据框
+            labels_df: 包含每个样本标签的数据框
         """
-        # Select paths for training and evaluation
+        # 选择训练和评估的路径
         if file_list is None:
-            data_paths = glob.glob(os.path.join(root_path, '*'))  # list of all paths
+            data_paths = glob.glob(os.path.join(root_path, '*'))  # 所有路径的列表
         else:
             data_paths = [os.path.join(root_path, p) for p in file_list]
         if len(data_paths) == 0:
@@ -679,48 +853,51 @@ class UEAloader(Dataset):
             pattern='*.ts'
             raise Exception("No .ts files found using pattern: '{}'".format(pattern))
 
-        all_df, labels_df = self.load_single(input_paths[0])  # a single file contains dataset
+        all_df, labels_df = self.load_single(input_paths[0])  # 单个文件包含数据集
 
         return all_df, labels_df
 
     def load_single(self, filepath):
+        """加载单个ts文件"""
         df, labels = load_from_tsfile_to_dataframe(filepath, return_separate_X_and_y=True,
                                                              replace_missing_vals_with='NaN')
         labels = pd.Series(labels, dtype="category")
         self.class_names = labels.cat.categories
         labels_df = pd.DataFrame(labels.cat.codes,
-                                 dtype=np.int8)  # int8-32 gives an error when using nn.CrossEntropyLoss
+                                 dtype=np.int8)  # int8-32在使用nn.CrossEntropyLoss时出错
 
+        # 计算每个系列的长度
         lengths = df.applymap(
-            lambda x: len(x)).values  # (num_samples, num_dimensions) array containing the length of each series
+            lambda x: len(x)).values  # (num_samples, num_dimensions) 包含每个系列长度的数组
 
         horiz_diffs = np.abs(lengths - np.expand_dims(lengths[:, 0], -1))
 
-        if np.sum(horiz_diffs) > 0:  # if any row (sample) has varying length across dimensions
+        if np.sum(horiz_diffs) > 0:  # 如果任何行（样本）在维度间长度不同
             df = df.applymap(subsample)
 
         lengths = df.applymap(lambda x: len(x)).values
         vert_diffs = np.abs(lengths - np.expand_dims(lengths[0, :], 0))
-        if np.sum(vert_diffs) > 0:  # if any column (dimension) has varying length across samples
+        if np.sum(vert_diffs) > 0:  # 如果任何列（维度）在样本间长度不同
             self.max_seq_len = int(np.max(lengths[:, 0]))
         else:
             self.max_seq_len = lengths[0, 0]
 
-        # First create a (seq_len, feat_dim) dataframe for each sample, indexed by a single integer ("ID" of the sample)
-        # Then concatenate into a (num_samples * seq_len, feat_dim) dataframe, with multiple rows corresponding to the
-        # sample index (i.e. the same scheme as all datasets in this project)
+        # 首先为每个样本创建一个(seq_len, feat_dim)数据框，由单个整数索引（样本的"ID"）
+        # 然后连接成(num_samples * seq_len, feat_dim)数据框，多行对应样本索引
+        # （即与此项目中所有数据集相同的方案）
 
         df = pd.concat((pd.DataFrame({col: df.loc[row, col] for col in df.columns}).reset_index(drop=True).set_index(
             pd.Series(lengths[row, 0] * [row])) for row in range(df.shape[0])), axis=0)
 
-        # Replace NaN values
+        # 替换NaN值
         grp = df.groupby(by=df.index)
         df = grp.transform(interpolate_missing)
 
         return df, labels_df
 
     def instance_norm(self, case):
-        if self.root_path.count('EthanolConcentration') > 0:  # special process for numerical stability
+        """实例归一化"""
+        if self.root_path.count('EthanolConcentration') > 0:  # 数值稳定性的特殊处理
             mean = case.mean(0, keepdim=True)
             case = case - mean
             stdev = torch.sqrt(torch.var(case, dim=1, keepdim=True, unbiased=False) + 1e-5)
@@ -730,6 +907,7 @@ class UEAloader(Dataset):
             return case
 
     def __getitem__(self, ind):
+        """获取单个样本"""
         batch_x = self.feature_df.loc[self.all_IDs[ind]].values
         labels = self.labels_df.loc[self.all_IDs[ind]].values
         if self.flag == "TRAIN" and self.args.augmentation_ratio > 0:
@@ -745,4 +923,5 @@ class UEAloader(Dataset):
                torch.from_numpy(labels)
 
     def __len__(self):
+        """返回数据集长度"""
         return len(self.all_IDs)
