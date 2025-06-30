@@ -22,7 +22,7 @@ from data_provider.data_loader import (
     UEAloader,
 )
 from data_provider.uea import collate_fn
-from torch.utils.data.dataloader import DataLoader
+from torch.utils.data import DataLoader
 
 # 数据集字典：将数据集名称映射到对应的数据集类
 data_dict = {

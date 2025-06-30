@@ -167,3 +167,5 @@ scripts/augmentation/
 run_anylearn.py
 environment.txtdatasets/
 *.csv
+datasets/JapaneseVowels/JapaneseVowels_TRAIN.ts
+datasets/
