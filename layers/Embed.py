@@ -236,19 +236,67 @@ class DataEmbedding(nn.Module):
 
 
 class DataEmbedding_inverted(nn.Module):
+    """
+    变量-时间倒置嵌入层（iTransformer专用）
+
+    本模块实现了 iTransformer 论文（https://arxiv.org/abs/2310.06625）中的倒置嵌入方式。
+    与传统 Transformer 的 [Batch, Time, Variate] 输入不同，这里输入为 [Batch, Variate, Time]，
+    先对变量维度做线性投影，再施加 Dropout。可选地支持拼接时间特征（如时间戳等）。
+
+    理论依据:
+        - 该嵌入方式有助于建模多变量时间序列中的变量间依赖关系。
+        - 论文: "iTransformer: Inverted Transformers Are Effective for Time Series Forecasting" (2023)
+
+    输入与输出:
+        - 输入:
+            x (torch.Tensor): 原始序列，形状为 (batch_size, seq_len, n_vars)
+            x_mark (torch.Tensor | None): 时间特征，形状为 (batch_size, seq_len, time_feat_dim) 或 None
+        - 输出:
+            嵌入后张量，形状为 (batch_size, n_vars, d_model) 或 (batch_size, n_vars+time_feat_dim, d_model)
+
+    Args:
+        c_in (int): 输入变量数（n_vars）
+        d_model (int): 嵌入维度
+        embed_type (str): 嵌入类型（保留参数，未使用）
+        freq (str): 时间频率（保留参数，未使用）
+        dropout (float): Dropout 比例
+
+    Usage Example:
+        >>> embedding = DataEmbedding_inverted(c_in=7, d_model=64)
+        >>> x = torch.randn(32, 96, 7)  # (batch, seq_len, n_vars)
+        >>> out = embedding(x, None)    # out: (32, 7, 64)
+    """
+
     def __init__(self, c_in, d_model, embed_type="fixed", freq="h", dropout=0.1):
         super(DataEmbedding_inverted, self).__init__()
+        # (1) 变量维度线性投影: [Batch, Variate, Time] -> [Batch, Variate, d_model]
         self.value_embedding = nn.Linear(c_in, d_model)
+        # (2) Dropout 层
         self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, x, x_mark):
+        """
+        前向传播函数
+
+        Args:
+            x (torch.Tensor): 输入序列，形状为 (batch_size, seq_len, n_vars)
+            x_mark (torch.Tensor | None): 时间特征，形状为 (batch_size, seq_len, time_feat_dim) 或 None
+
+        Returns:
+            torch.Tensor: 嵌入后张量，形状为 (batch_size, n_vars, d_model)
+        """
+        # (1) 交换变量和时间维度: (B, L, N) -> (B, N, L)
         x = x.permute(0, 2, 1)
-        # x: [Batch Variate Time]
+        # x: [Batch, Variate, Time]
         if x_mark is None:
+            # (2) 仅对变量做线性投影: (B, N, L) -> (B, N, d_model)
             x = self.value_embedding(x)
         else:
-            x = self.value_embedding(torch.cat([x, x_mark.permute(0, 2, 1)], 1))
-        # x: [Batch Variate d_model]
+            # (3) 拼接时间特征: (B, N, L) + (B, time_feat_dim, L) -> (B, N+time_feat_dim, L)
+            # x_mark.permute: (B, L, time_feat_dim) -> (B, time_feat_dim, L)
+            x = self.value_embedding(torch.cat([x, x_mark.permute(0, 2, 1)], dim=1))
+            # (B, N+time_feat_dim, L) -> (B, N+time_feat_dim, d_model)
+        # (4) Dropout: (B, N, d_model) 或 (B, N+time_feat_dim, d_model)
         return self.dropout(x)
 
 
