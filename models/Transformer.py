@@ -28,13 +28,13 @@ class Model(nn.Module):
                     AttentionLayer(
                         FullAttention(False, configs.factor, attention_dropout=configs.dropout,
                                       output_attention=False), configs.d_model, configs.n_heads),
-                    configs.d_model,
+                    configs.d_model, 
                     configs.d_ff,
                     dropout=configs.dropout,
                     activation=configs.activation
                 ) for l in range(configs.e_layers)
             ],
-            norm_layer=torch.nn.LayerNorm(configs.d_model)
+            norm_layer=nn.LayerNorm(configs.d_model)
         )
         # Decoder
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
@@ -58,7 +58,7 @@ class Model(nn.Module):
                     )
                     for l in range(configs.d_layers)
                 ],
-                norm_layer=torch.nn.LayerNorm(configs.d_model),
+                norm_layer=nn.LayerNorm(configs.d_model),
                 projection=nn.Linear(configs.d_model, configs.c_out, bias=True)
             )
         if self.task_name == 'imputation':
