@@ -24,7 +24,6 @@ from utils.augmentation import run_augmentation_single
 
 warnings.filterwarnings('ignore')
 
-
 class Dataset_ETT_hour(Dataset):
     """
     ETT小时级数据集加载器
@@ -107,7 +106,7 @@ class Dataset_ETT_hour(Dataset):
         if self.scale:
             train_data = df_data[border1s[0]:border2s[0]]  # 使用训练集数据拟合标准化器
             self.scaler.fit(train_data.values)
-            data = self.scaler.transform(df_data.values)
+            data = self.scaler.transform(df_data.values) # 标准化原始输入  
         else:
             data = df_data.values
 
