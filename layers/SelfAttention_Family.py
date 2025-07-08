@@ -46,7 +46,19 @@ class DSAttention(nn.Module):
 
 
 class FullAttention(nn.Module):
+    """完整注意力机制的实现
+    这是transformer中标准的缩放点积注意力机制(Scaled Dot-Product Attention)的实现
+    计算公式为: Attention(Q,K,V) = softmax(QK^T/sqrt(d_k))V
+    """
     def __init__(self, mask_flag=True, factor=5, scale=None, attention_dropout=0.1, output_attention=False):
+        """初始化函数
+        Args:
+            mask_flag (bool): 是否使用掩码，用于因果注意力机制
+            factor (int): 缩放因子，用于ProbAttention中，这里未使用
+            scale (float): 缩放因子，若为None则使用1/sqrt(d_k)
+            attention_dropout (float): 注意力权重的dropout率
+            output_attention (bool): 是否输出注意力权重矩阵
+        """
         super(FullAttention, self).__init__()
         self.scale = scale
         self.mask_flag = mask_flag
@@ -54,21 +66,45 @@ class FullAttention(nn.Module):
         self.dropout = nn.Dropout(attention_dropout)
 
     def forward(self, queries, keys, values, attn_mask, tau=None, delta=None):
-        B, L, H, E = queries.shape
-        _, S, _, D = values.shape
+        """前向传播函数
+        Args:
+            queries: 查询矩阵 [Batch, Length_Q, Head, Embedding_dim]
+            keys: 键矩阵 [Batch, Length_K, Head, Embedding_dim]
+            values: 值矩阵 [Batch, Length_V, Head, Dimension_V]
+            attn_mask: 注意力掩码
+            tau: 温度参数(未使用)
+            delta: 位置偏移参数(未使用)
+        Returns:
+            V: 注意力计算结果
+            A: 注意力权重矩阵(如果output_attention=True)
+        """
+        # 获取输入张量的形状
+        B, L, H, E = queries.shape  # Batch, Length_Q, Head, Embedding_dim
+        _, S, _, D = values.shape   # Batch, Length_V, Head, Dimension_V
+        
+        # 计算缩放因子，如果未指定则使用1/sqrt(E)
         scale = self.scale or 1. / sqrt(E)
 
+        # 计算注意力分数 (Q×K^T)
+        # einsum进行批量矩阵乘法，得到形状为[B,H,L,S]的张量
         scores = torch.einsum("blhe,bshe->bhls", queries, keys)
 
+        # 如果使用掩码
         if self.mask_flag:
             if attn_mask is None:
+                # 创建三角因果掩码，用于确保当前位置只能注意到过去的位置
                 attn_mask = TriangularCausalMask(B, L, device=queries.device)
-
+            
+            # 将掩码位置的值设为负无穷，使softmax后的权重为0
             scores.masked_fill_(attn_mask.mask, -np.inf)
 
+        # 应用softmax和dropout得到注意力权重
         A = self.dropout(torch.softmax(scale * scores, dim=-1))
+        
+        # 计算最终的注意力输出 (A×V)
         V = torch.einsum("bhls,bshd->blhd", A, values)
 
+        # 根据output_attention决定是否返回注意力权重矩阵
         if self.output_attention:
             return V.contiguous(), A
         else:
@@ -177,39 +213,79 @@ class ProbAttention(nn.Module):
 
 
 class AttentionLayer(nn.Module):
-    def __init__(self, attention, d_model, n_heads, d_keys=None,
-                 d_values=None):
+    """多头注意力机制层的实现
+    这个类封装了完整的多头注意力机制，包括投影变换和注意力计算
+    """
+    def __init__(self, attention, d_model, n_heads, d_keys=None, d_values=None):
+        """初始化函数
+        Args:
+            attention: 注意力机制的具体实现（如FullAttention、ProbAttention等）
+            d_model: 输入的特征维度
+            n_heads: 注意力头的数量
+            d_keys: 键向量的维度，默认为d_model/n_heads
+            d_values: 值向量的维度，默认为d_model/n_heads
+        """
         super(AttentionLayer, self).__init__()
 
-        d_keys = d_keys or (d_model // n_heads)
-        d_values = d_values or (d_model // n_heads)
+        # 如果没有指定键和值的维度，则将输入维度平均分配给每个注意力头
+        d_keys = d_keys or (d_model // n_heads)    # 每个头的键维度
+        d_values = d_values or (d_model // n_heads) # 每个头的值维度
 
+        # 保存注意力机制的具体实现（如FullAttention）
         self.inner_attention = attention
-        self.query_projection = nn.Linear(d_model, d_keys * n_heads)
-        self.key_projection = nn.Linear(d_model, d_keys * n_heads)
-        self.value_projection = nn.Linear(d_model, d_values * n_heads)
+        
+        # 创建线性变换层，用于生成查询、键、值向量
+        # 输入维度为d_model，输出维度为d_keys/d_values * n_heads
+        self.query_projection = nn.Linear(d_model, d_keys * n_heads)   # Q投影
+        self.key_projection = nn.Linear(d_model, d_keys * n_heads)     # K投影
+        self.value_projection = nn.Linear(d_model, d_values * n_heads) # V投影
+        
+        # 输出投影，将多头的结果合并回原始维度
         self.out_projection = nn.Linear(d_values * n_heads, d_model)
+        
+        # 保存注意力头数量
         self.n_heads = n_heads
 
     def forward(self, queries, keys, values, attn_mask, tau=None, delta=None):
-        B, L, _ = queries.shape
-        _, S, _ = keys.shape
-        H = self.n_heads
+        """前向传播函数
+        Args:
+            queries: 查询张量 [Batch, Length_Q, d_model]
+            keys: 键张量 [Batch, Length_K, d_model]
+            values: 值张量 [Batch, Length_V, d_model]
+            attn_mask: 注意力掩码
+            tau: 温度参数（可选）
+            delta: 位置偏移参数（可选）
+        Returns:
+            out: 注意力机制的输出 [Batch, Length_Q, d_model]
+            attn: 注意力权重
+        """
+        # 获取批次大小和序列长度
+        B, L, _ = queries.shape  # B:批次大小，L:查询序列长度
+        _, S, _ = keys.shape     # S:键序列长度
+        H = self.n_heads        # H:注意力头数量
 
+        # 对查询、键、值进行线性变换并重塑维度
+        # 从[B, L, d_model]变换到[B, L, H, d_k/v]
         queries = self.query_projection(queries).view(B, L, H, -1)
         keys = self.key_projection(keys).view(B, S, H, -1)
         values = self.value_projection(values).view(B, S, H, -1)
 
+        # 调用具体的注意力机制实现（如FullAttention）
         out, attn = self.inner_attention(
-            queries,
-            keys,
-            values,
-            attn_mask,
-            tau=tau,
-            delta=delta
+            queries,    # [B, L, H, d_k]
+            keys,      # [B, S, H, d_k]
+            values,    # [B, S, H, d_v]
+            attn_mask, # 注意力掩码
+            tau=tau,   # 温度参数
+            delta=delta # 位置偏移参数
         )
+        
+        # 将多头注意力的结果重塑回原始维度
+        # 从[B, L, H, d_v]变换到[B, L, H*d_v]
         out = out.view(B, L, -1)
 
+        # 通过输出投影层，将结果映射回原始维度
+        # 从[B, L, H*d_v]变换到[B, L, d_model]
         return self.out_projection(out), attn
 
 
