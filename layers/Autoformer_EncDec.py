@@ -1,11 +1,35 @@
+"""
+Autoformer Encoder-Decoder 相关模块
+
+本文件实现了 Autoformer/FEDformer 论文中的若干核心组件，用于时间序列建模与分解：
+    • `moving_avg`               — 计算滑动平均以提取趋势 (Trend)。
+    • `series_decomp`            — 将序列分解为季节性 (Seasonal) 与趋势 (Trend)。
+    • `series_decomp_multi`      — 多尺度分解，可并行使用多种窗口。
+    • `EncoderLayer` / `Encoder` — 逐层自注意力 + 分解的编码架构。
+    • `DecoderLayer` / `Decoder` — 解码端采用交叉注意力与递进分解。
+
+该模块既可供 Autoformer 使用，也被 DLinear 等模型复用。
+
+张量记号约定：
+    B — batch_size
+    L — 序列长度 (seq_len)
+    D — 变量维度 (d_model / channels)
+
+所有方法均严格注明输入 / 输出形状，方便新手理解与调试。
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
 class my_Layernorm(nn.Module):
-    """
-    Special designed layernorm for the seasonal part
+    """专用于季节性分量的 LayerNorm。
+
+    与标准 `nn.LayerNorm` 不同，本实现会在归一化后去除通道均值 (bias)，
+    以保证季节性分量均值为 0，符合论文中的设计。
+
+    Args:
+        channels (int): 输入特征维度 \(D)。
     """
 
     def __init__(self, channels):
@@ -13,14 +37,31 @@ class my_Layernorm(nn.Module):
         self.layernorm = nn.LayerNorm(channels)
 
     def forward(self, x):
+        """前向计算。
+
+        Args:
+            x (torch.Tensor): 输入张量，形状 `(B, L, D)`。
+
+        Returns:
+            torch.Tensor: 去均值后的归一化结果，形状 `(B, L, D)`。
+        """
+        # (1) 常规 LayerNorm：保持形状不变
         x_hat = self.layernorm(x)
+        # (2) 计算 batch 内每个时间步均值，并复制到原形状 (B, 1, D) → (B, L, D)
         bias = torch.mean(x_hat, dim=1).unsqueeze(1).repeat(1, x.shape[1], 1)
+        # (3) 去除均值，使季节性分量零均值
         return x_hat - bias
 
 
 class moving_avg(nn.Module):
-    """
-    Moving average block to highlight the trend of time series
+    """滑动平均模块，用于提取时间序列趋势 (Trend)。
+
+    Args:
+        kernel_size (int): 卷积窗口大小，相当于滑动窗口长度。
+        stride (int): 步幅，默认为 1。
+
+    输入形状: `(B, L, D)`
+    输出形状: `(B, L, D)` （与输入一致）。
     """
 
     def __init__(self, kernel_size, stride):
@@ -29,18 +70,37 @@ class moving_avg(nn.Module):
         self.avg = nn.AvgPool1d(kernel_size=kernel_size, stride=stride, padding=0)
 
     def forward(self, x):
-        # padding on the both ends of time series
+        """前向计算滑动平均。
+
+        形状变换流程:
+            (B, L, D)
+                ➡️ 前后端填充 → (B, L + k - 1, D)
+                ➡️ 转置后 1D AvgPool → (B, D, L)
+                ➡️ 再转置回来 → (B, L, D)
+        """
+        # (1) padding — 在序列两端复制首尾元素，避免边界信息缺失
         front = x[:, 0:1, :].repeat(1, (self.kernel_size - 1) // 2, 1)
         end = x[:, -1:, :].repeat(1, (self.kernel_size - 1) // 2, 1)
         x = torch.cat([front, x, end], dim=1)
+        # (2) 转换为 (B, D, L) 以沿时间维做 AvgPool
         x = self.avg(x.permute(0, 2, 1))
+        # (3) 恢复原始形状 (B, L, D)
         x = x.permute(0, 2, 1)
         return x
 
 
 class series_decomp(nn.Module):
-    """
-    Series decomposition block
+    """单尺度时间序列分解模块。
+
+    使用滑动平均将序列 \(x) 分解为:
+        • `res`: 季节性 / 残差分量，`x - moving_mean`
+        • `moving_mean`: 趋势分量
+
+    Args:
+        kernel_size (int): 滑动平均窗口大小。
+
+    输入形状: `(B, L, D)`
+    输出形状: `(res, trend)` — 均为 `(B, L, D)`。
     """
 
     def __init__(self, kernel_size):
@@ -48,14 +108,24 @@ class series_decomp(nn.Module):
         self.moving_avg = moving_avg(kernel_size, stride=1)
 
     def forward(self, x):
+        """执行序列分解。
+
+        Steps:
+            (1) 计算滑动平均 → `moving_mean` (Trend)
+            (2) 计算残差      → `res = x - moving_mean` (Seasonal)
+        """
+        # (1) 滑动平均，提取趋势
         moving_mean = self.moving_avg(x)
+        # (2) 残差 = 原序列 - 趋势
         res = x - moving_mean
         return res, moving_mean
 
 
 class series_decomp_multi(nn.Module):
-    """
-    Multiple Series decomposition block from FEDformer
+    """多尺度序列分解模块 (来源: FEDformer)。
+
+    接收一个窗口列表 `kernel_size`，为每个窗口实例化一个 `series_decomp`，
+    最终输出各尺度平均后的季节性与趋势分量。
     """
 
     def __init__(self, kernel_size):

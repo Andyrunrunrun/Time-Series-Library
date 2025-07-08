@@ -8,7 +8,29 @@ from einops import rearrange, repeat
 
 
 class DSAttention(nn.Module):
-    '''De-stationary Attention'''
+    """
+    De-stationary Attention (DSAttention)
+
+    本模块基于论文 *Non-stationary Transformer: Exploring De-stationary Transformer for Long-Term Time-Series Forecasting* 中提出的去平稳化注意力机制。
+
+    在传统的缩放点积注意力 (Scaled Dot-Product Attention) 中，softmax 之前的得分为 `Q·Kᵀ / sqrt(d_k)`；
+    DSAttention 通过引入 **样本级** 去平稳化因子 τ、δ，将得分调整为：
+
+        score' = (Q·Kᵀ) * τ + δ
+
+    其中
+        • τ (tau)   —— 缩放因子，正标量，针对整条序列的方差变化；
+        • δ (delta) —— 平移向量，长度等于键序列长度 *S*，针对每个时间步做均值偏移。
+
+    这两个因子由外部 Projector 网络动态预测，并在调用 forward 时作为参数传入。
+
+    参数说明:
+        mask_flag (bool): 是否使用掩码。若为 True，则默认采用 TriangularCausalMask 实现因果注意力。
+        factor (int): 兼容 ProbAttention 的接口参数，这里未使用。
+        scale (float | None): Softmax 前的额外缩放因子；若为 None 则默认使用 1/sqrt(E)。
+        attention_dropout (float): 对 softmax 后注意力权重施加的 Dropout 概率。
+        output_attention (bool): 若为 True，forward 将额外返回注意力权重矩阵。
+    """
 
     def __init__(self, mask_flag=True, factor=5, scale=None, attention_dropout=0.1, output_attention=False):
         super(DSAttention, self).__init__()
@@ -18,31 +40,61 @@ class DSAttention(nn.Module):
         self.dropout = nn.Dropout(attention_dropout)
 
     def forward(self, queries, keys, values, attn_mask, tau=None, delta=None):
+        """前向传播
+
+        Args:
+            queries (Tensor): 查询张量，形状 `[B, L_q, H, E]`。
+            keys    (Tensor): 键张量，形状 `[B, L_k, H, E]`。
+            values  (Tensor): 值张量，形状 `[B, L_v, H, D]`。
+            attn_mask (Tensor | None): 注意力掩码；为 None 且 `mask_flag=True` 时使用因果掩码。
+            tau (Tensor | None): 去平稳化缩放因子 τ，形状 `[B, 1]`；None 时退化为 1。    
+            delta (Tensor | None): 去平稳化平移向量 δ，形状 `[B, S]`；None 时退化为 0。
+
+        Returns:
+            Tuple[Tensor, Optional[Tensor]]: 注意力输出 V 及可选的注意力权重 A。
+        """
+        # --------------------------- 维度信息 ---------------------------
+        # B: batch size, L: query length, S: key/value length
+        # H: head 数量, E: 每个 head 的 embedding 维度, D: value 的维度
         B, L, H, E = queries.shape
         _, S, _, D = values.shape
-        scale = self.scale or 1. / sqrt(E)
 
-        tau = 1.0 if tau is None else tau.unsqueeze(
-            1).unsqueeze(1)  # B x 1 x 1 x 1
-        delta = 0.0 if delta is None else delta.unsqueeze(
-            1).unsqueeze(1)  # B x 1 x 1 x S
+        # 若未显式指定缩放系数，则使用 1/sqrt(E) 缩放以避免数值过大
+        scale = self.scale or 1.0 / sqrt(E)
 
-        # De-stationary Attention, rescaling pre-softmax score with learned de-stationary factors
+        # ----------------------- 去平稳化因子处理 -----------------------
+        # tau: [B]         -> [B,1,1,1] 与 QKᵀ 按元素乘
+        # delta: [B, S]    -> [B,1,1,S] 与得分做按元素加
+        tau = 1.0 if tau is None else tau.unsqueeze(1).unsqueeze(1)
+        delta = 0.0 if delta is None else delta.unsqueeze(1).unsqueeze(1)
+
+        # ------------------------- 注意力得分 --------------------------
+        # 基础得分: torch.einsum("blhe,bshe->bhls", Q, K)
+        # 之后先乘 tau 再加 delta，实现去平稳化重标定
         scores = torch.einsum("blhe,bshe->bhls", queries, keys) * tau + delta
 
+        # --------------------------- 掩码逻辑 ---------------------------
         if self.mask_flag:
+            # 若未显式给出 attn_mask，则默认构造三角因果掩码
             if attn_mask is None:
                 attn_mask = TriangularCausalMask(B, L, device=queries.device)
 
+            # 将掩码位置设置为 -inf，使 softmax 后权重为 0
             scores.masked_fill_(attn_mask.mask, -np.inf)
 
+        # --------------------------- Softmax ---------------------------
+        # 先乘 scale 再做 softmax，最后施加 dropout 获取注意力权重 A
         A = self.dropout(torch.softmax(scale * scores, dim=-1))
+
+        # --------------------------- 聚合输出 ---------------------------
+        # 注意力输出 V: (A × V) -> [B, L, H, D]
         V = torch.einsum("bhls,bshd->blhd", A, values)
 
+        # 根据 output_attention 标志决定是否返回注意力权重矩阵
         if self.output_attention:
-            return V.contiguous(), A
+            return V.contiguous(), A  # 返回 (输出, 权重)
         else:
-            return V.contiguous(), None
+            return V.contiguous(), None  # 仅返回输出
 
 
 class FullAttention(nn.Module):
