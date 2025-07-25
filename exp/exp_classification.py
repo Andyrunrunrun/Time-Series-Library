@@ -188,4 +188,10 @@ class Exp_Classification(Exp_Basic):
         f.write('\n')
         f.write('\n')
         f.close()
-        return
+        
+        # 返回分类任务的评估指标，便于在run.py中收集结果用于CSV保存
+        return {
+            'accuracy': accuracy,
+            'num_classes': preds.shape[1],
+            'total_samples': len(predictions)
+        }

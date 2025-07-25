@@ -25,7 +25,6 @@ class PositionalEmbedding(nn.Module):
         pe[:, 1::2] = torch.cos(position * div_term)
 
         pe = pe.unsqueeze(0)  # 在张量的最前面添加一个维度 (max_len, d_model) -> (1, max_len, d_model)
-        self.pe: torch.Tensor = pe  # 添加类型注释
         self.register_buffer("pe", pe)
 
     def forward(self, x):

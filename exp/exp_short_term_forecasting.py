@@ -230,6 +230,23 @@ class Exp_Short_Term_Forecast(Exp_Basic):
             print('mape:', mape)
             print('mase:', mase)
             print('owa:', owa_results)
+            
+            # 返回M4短期预测的评估指标，便于在run.py中收集结果用于CSV保存
+            return {
+                'smape': smape_results,
+                'owa': owa_results,
+                'mape': mape,
+                'mase': mase,
+                'seasonal_patterns': self.args.seasonal_patterns
+            }
         else:
             print('After all 6 tasks are finished, you can calculate the averaged index')
-        return
+            # 单个任务完成但还没有完整评估时，返回基础信息
+            return {
+                'smape': 0,
+                'owa': 0,
+                'mape': 0,
+                'mase': 0,
+                'seasonal_patterns': self.args.seasonal_patterns,
+                'status': 'partial_completion'
+            }

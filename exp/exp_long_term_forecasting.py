@@ -372,4 +372,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         np.save(folder_path + 'pred.npy', preds)
         np.save(folder_path + 'true.npy', trues)
 
-        return
+        # 返回评估指标，便于在run.py中收集结果用于CSV保存
+        return {
+            'mae': mae,
+            'mse': mse,
+            'rmse': rmse,
+            'mape': mape,
+            'mspe': mspe,
+            'dtw': dtw_metric_val
+        }

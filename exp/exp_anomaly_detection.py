@@ -204,4 +204,13 @@ class Exp_Anomaly_Detection(Exp_Basic):
         f.write('\n')
         f.write('\n')
         f.close()
-        return
+        
+        # 返回异常检测的评估指标，便于在run.py中收集结果用于CSV保存
+        return {
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'f_score': f_score,
+            'threshold': threshold,
+            'anomaly_ratio': self.args.anomaly_ratio
+        }

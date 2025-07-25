@@ -225,4 +225,13 @@ class Exp_Imputation(Exp_Basic):
         np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape, mspe]))
         np.save(folder_path + 'pred.npy', preds)
         np.save(folder_path + 'true.npy', trues)
-        return
+        
+        # 返回插值任务的评估指标，便于在run.py中收集结果用于CSV保存
+        return {
+            'mae': mae,
+            'mse': mse,
+            'rmse': rmse,
+            'mape': mape,
+            'mspe': mspe,
+            'mask_rate': self.args.mask_rate
+        }
