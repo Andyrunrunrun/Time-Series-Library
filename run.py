@@ -4,6 +4,9 @@ import torch
 import torch.backends
 import pandas as pd
 from exp.exp_long_term_forecasting import Exp_Long_Term_Forecast
+from exp.exp
+from exp.exp_zero_shot_forecasting import Exp_Zero_Shot_Forecast
+from exp.exp_few_shot_forecasting import Exp_Few_Shot_Forecast
 from exp.exp_imputation import Exp_Imputation
 from exp.exp_short_term_forecasting import Exp_Short_Term_Forecast
 from exp.exp_anomaly_detection import Exp_Anomaly_Detection
@@ -12,6 +15,15 @@ from utils.print_args import print_args
 import random
 import numpy as np
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 if __name__ == '__main__':
     fix_seed = 2021
     random.seed(fix_seed)
@@ -140,7 +152,41 @@ if __name__ == '__main__':
 
     # TimeXer
     parser.add_argument('--patch_len', type=int, default=16, help='patch length')
+    # Multimodel
+    parser.add_argument('--vlm_type', type=str, default='CLIP', help='VLM model type, e.g. CLIP, BLIP2, etc.')
+    parser.add_argument('--image_size', type=int, default=224, help='image size for time series to image')
+    parser.add_argument('--memory_bank_size', type=int, default=20, help='memory bank size')
+    parser.add_argument('--patch_memory_size', type=int, default=100, help='patch memory bank size')
+    parser.add_argument('--periodicity', type=int, default=96)
+    parser.add_argument('--interpolation', type=str, default='bilinear')
+    parser.add_argument('--norm_const', type=float, default=0.4)
+    parser.add_argument('--three_channel_image', type=str2bool, default=True, help='use three channel image')
+    parser.add_argument('--finetune_vlm', type=str2bool, default=False, help='finetune VLM model')
+    parser.add_argument('--learnable_image', type=str2bool, default=True, help='learnable image')
+    parser.add_argument('--save_images', type=str2bool, default=False, help='save images')
+    parser.add_argument('--use_cross_attention', type=str2bool, default=True, help='use cross attention to fuse image and text embeddings in customVLM')
+    parser.add_argument('--w_out_visual', type=str2bool, default=False, help='without visual part')
+    parser.add_argument('--w_out_text', type=str2bool, default=False, help='without text part')
+    parser.add_argument('--w_out_query', type=str2bool, default=False, help='without query part')
+    parser.add_argument('--visualize_embeddings', type=str2bool, default=False, help='visualize embeddings')
+    parser.add_argument('--llm_model', type=str, default='GPT2', help='LLM model') # LLAMA, GPT2, BERT
+    parser.add_argument('--llm_dim', type=int, default='768', help='LLM model dimension')# LLama7b:4096; GPT2-small:768; BERT-base:768
+    parser.add_argument('--stride', type=int, default=8, help='stride')
+    parser.add_argument('--padding', type=int, default=8, help='padding')
+    parser.add_argument('--llm_layers', type=int, default=1)
+    parser.add_argument('--prompt_domain', type=int, default=0, help='')
+    parser.add_argument('--align_const', type=float, default=0.4)
 
+    parser.add_argument('--wo_ts', type=int, default=0, help='without/with Time Series Data 1/0')
+    
+    # zero-shot forecasting
+    parser.add_argument('--target_data', type=str, default='ETTh2', help='target dataset type')
+    parser.add_argument('--target_root_path', type=str, default='./data/ETT/', help='root path of the target data file')
+    parser.add_argument('--target_data_path', type=str, default='ETTh2.csv', help='target data file')
+        
+    # few-shot forecasting
+    parser.add_argument('--percent', type=float, default=1, help='proportion of in-distribution downstream dataset')
+    
     args = parser.parse_args()
     if torch.cuda.is_available() and args.use_gpu:
         args.device = torch.device('cuda:{}'.format(args.gpu))
@@ -157,7 +203,8 @@ if __name__ == '__main__':
         device_ids = args.devices.split(',')
         args.device_ids = [int(id_) for id_ in device_ids]
         args.gpu = args.device_ids[0]
-
+        
+    args.content = load_content(args)
     print('Args in experiment:')
     print_args(args)
 
@@ -171,6 +218,10 @@ if __name__ == '__main__':
         Exp = Exp_Anomaly_Detection
     elif args.task_name == 'classification':
         Exp = Exp_Classification
+    elif args.task_name == 'zero_shot_forecast':
+        Exp = Exp_Zero_Shot_Forecast
+    elif args.task_name == 'few_shot_forecast':
+        Exp = Exp_Few_Shot_Forecast
     else:
         Exp = Exp_Long_Term_Forecast
 
