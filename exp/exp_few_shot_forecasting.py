@@ -9,16 +9,13 @@ import os
 import time
 import warnings
 import numpy as np
-import pandas as pd
-from utils.dtw_metric import dtw, accelerated_dtw
-from utils.augmentation import run_augmentation, run_augmentation_single
+from utils.dtw_metric import dtw,accelerated_dtw
 
 warnings.filterwarnings('ignore')
 
-
-class Exp_Long_Term_Forecast(Exp_Basic):
+class Exp_Few_Shot_Forecast(Exp_Basic):
     def __init__(self, args):
-        super(Exp_Long_Term_Forecast, self).__init__(args)
+        super(Exp_Few_Shot_Forecast, self).__init__(args)
 
     def _build_model(self):
         model = self.model_dict[self.args.model].Model(self.args).float()
@@ -38,7 +35,6 @@ class Exp_Long_Term_Forecast(Exp_Basic):
     def _select_criterion(self):
         criterion = nn.MSELoss()
         return criterion
- 
 
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
@@ -168,9 +164,15 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
     def test(self, setting, test=0):
         test_data, test_loader = self._get_data(flag='test')
+        
+        if isinstance(test_data, torch.utils.data.Subset):
+            data_scaling = test_data.dataset.scale
+        else:
+            data_scaling = test_data.scale
+        
         if test:
             print('loading model')
-            self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'checkpoint.pth')))
+            self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'checkpoint.pth'), map_location=self.device))
 
         preds = []
         trues = []
@@ -202,13 +204,15 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 batch_y = batch_y[:, -self.args.pred_len:, :].to(self.device)
                 outputs = outputs.detach().cpu().numpy()
                 batch_y = batch_y.detach().cpu().numpy()
-                if test_data.scale and self.args.inverse:
-                    shape = batch_y.shape
-                    if outputs.shape[-1] != batch_y.shape[-1]:
-                        outputs = np.tile(outputs, [1, 1, int(batch_y.shape[-1] / outputs.shape[-1])])
-                    outputs = test_data.inverse_transform(outputs.reshape(shape[0] * shape[1], -1)).reshape(shape)
-                    batch_y = test_data.inverse_transform(batch_y.reshape(shape[0] * shape[1], -1)).reshape(shape)
-
+                if data_scaling and self.args.inverse:
+                    shape = outputs.shape
+                    if isinstance(test_data, torch.utils.data.Subset):
+                        outputs = test_data.dataset.inverse_transform(outputs.reshape(shape[0] * shape[1], -1)).reshape(shape)
+                        batch_y = test_data.dataset.inverse_transform(batch_y.reshape(shape[0] * shape[1], -1)).reshape(shape)
+                    else:
+                        outputs = test_data.inverse_transform(outputs.reshape(shape[0] * shape[1], -1)).reshape(shape)
+                        batch_y = test_data.inverse_transform(batch_y.reshape(shape[0] * shape[1], -1)).reshape(shape)
+        
                 outputs = outputs[:, :, f_dim:]
                 batch_y = batch_y[:, :, f_dim:]
 
@@ -219,9 +223,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 trues.append(true)
                 if i % 20 == 0:
                     input = batch_x.detach().cpu().numpy()
-                    if test_data.scale and self.args.inverse:
+                    if data_scaling and self.args.inverse:
                         shape = input.shape
-                        input = test_data.inverse_transform(input.reshape(shape[0] * shape[1], -1)).reshape(shape)
+                        if isinstance(test_data, torch.utils.data.Subset):
+                            input = test_data.dataset.inverse_transform(input.reshape(shape[0] * shape[1], -1)).reshape(shape)
+                        else:
+                            input = test_data.inverse_transform(input.reshape(shape[0] * shape[1], -1)).reshape(shape)
                     gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
@@ -237,234 +244,33 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         folder_path = './results/' + setting + '/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
-
+        
         # dtw calculation
         if self.args.use_dtw:
             dtw_list = []
             manhattan_distance = lambda x, y: np.abs(x - y)
             for i in range(preds.shape[0]):
-                x = preds[i].reshape(-1, 1)
-                y = trues[i].reshape(-1, 1)
+                x = preds[i].reshape(-1,1)
+                y = trues[i].reshape(-1,1)
                 if i % 100 == 0:
                     print("calculating dtw iter:", i)
                 d, _, _, _ = accelerated_dtw(x, y, dist=manhattan_distance)
                 dtw_list.append(d)
             dtw = np.array(dtw_list).mean()
         else:
-            dtw = 'Not calculated'
+            dtw = 'not calculated'
 
         mae, mse, rmse, mape, mspe = metric(preds, trues)
-        print('mse:{}, mae:{}, dtw:{}'.format(mse, mae, dtw))
-        
-        # 保存到txt文件（保持原有功能）
+        print('mse: {}, mae: {}, dtw: {}'.format(mse, mae, dtw))
         f = open("result_long_term_forecast.txt", 'a')
         f.write(setting + "  \n")
-        f.write('mse:{}, mae:{}, dtw:{}'.format(mse, mae, dtw))
+        f.write('mse: {}, mae: {}, dtw: {}'.format(mse, mae, dtw))
         f.write('\n')
         f.write('\n')
         f.close()
-
-        # 保存到CSV文件
-        self._save_results_to_csv(setting, mae, mse, rmse, mape, mspe, dtw)
 
         np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape, mspe]))
         np.save(folder_path + 'pred.npy', preds)
         np.save(folder_path + 'true.npy', trues)
 
         return
-
-    def _save_results_to_csv(self, setting, mae, mse, rmse, mape, mspe, dtw):
-        """
-        将实验结果和所有参数（包括多模态参数）保存到CSV文件中。
-        
-        本函数会自动补全缺失的多模态参数字段（如旧记录无此字段则填None），确保所有实验结果记录字段一致，便于后续分析。
-
-        Args:
-            setting (str): 实验设置标识符
-            mae (float): 平均绝对误差
-            mse (float): 均方误差
-            rmse (float): 均方根误差
-            mape (float): 平均绝对百分比误差
-            mspe (float): 均方百分比误差
-            dtw (float or str): DTW距离或'Not calculated'
-
-        """
-        # (1) 定义所有多模态相关参数字段
-        multimodal_fields = [
-            'vlm_type', 'image_size', 'memory_bank_size', 'patch_memory_size', 'periodicity', 'interpolation',
-            'norm_const', 'three_channel_image', 'finetune_vlm', 'learnable_image', 'save_images',
-            'use_cross_attention', 'w_out_visual', 'w_out_text', 'w_out_query', 'visualize_embeddings',
-            'llm_model', 'llm_dim', 'stride', 'padding', 'llm_layers', 'prompt_domain', 'align_const', 'wo_ts',
-            'target_data', 'target_root_path', 'target_data_path', 'percent'
-        ]
-
-        # (2) 构建结果字典，包含所有参数和实验结果
-        result_dict = {
-            # 实验基本信息
-            'setting': setting,
-            'task_name': self.args.task_name,
-            'model_id': self.args.model_id,
-            'model': self.args.model,
-            'data': self.args.data,
-            
-            # 数据相关参数
-            'root_path': self.args.root_path,
-            'data_path': self.args.data_path,
-            'features': self.args.features,
-            'target': self.args.target,
-            'freq': self.args.freq,
-            
-            # 预测相关参数
-            'seq_len': self.args.seq_len,
-            'label_len': self.args.label_len,
-            'pred_len': self.args.pred_len,
-            'seasonal_patterns': self.args.seasonal_patterns,
-            'inverse': self.args.inverse,
-            
-            # 模型相关参数
-            'expand': self.args.expand,
-            'd_conv': self.args.d_conv,
-            'top_k': self.args.top_k,
-            'num_kernels': self.args.num_kernels,
-            'enc_in': self.args.enc_in,
-            'dec_in': self.args.dec_in,
-            'c_out': self.args.c_out,
-            'd_model': self.args.d_model,
-            'n_heads': self.args.n_heads,
-            'e_layers': self.args.e_layers,
-            'd_layers': self.args.d_layers,
-            'd_ff': self.args.d_ff,
-            'moving_avg': self.args.moving_avg,
-            'factor': self.args.factor,
-            'distil': self.args.distil,
-            'dropout': self.args.dropout,
-            'embed': self.args.embed,
-            'activation': self.args.activation,
-            'channel_independence': self.args.channel_independence,
-            'decomp_method': self.args.decomp_method,
-            'use_norm': self.args.use_norm,
-            'down_sampling_layers': self.args.down_sampling_layers,
-            'down_sampling_window': self.args.down_sampling_window,
-            'down_sampling_method': self.args.down_sampling_method,
-            'seg_len': self.args.seg_len,
-            
-            # 训练相关参数
-            'num_workers': self.args.num_workers,
-            'itr': self.args.itr,
-            'train_epochs': self.args.train_epochs,
-            'batch_size': self.args.batch_size,
-            'patience': self.args.patience,
-            'learning_rate': self.args.learning_rate,
-            'des': self.args.des,
-            'loss': self.args.loss,
-            'lradj': self.args.lradj,
-            'use_amp': self.args.use_amp,
-            
-            # GPU相关参数
-            'use_gpu': self.args.use_gpu,
-            'gpu': self.args.gpu,
-            'gpu_type': self.args.gpu_type,
-            'use_multi_gpu': self.args.use_multi_gpu,
-            'devices': self.args.devices,
-            
-            # 投影器参数
-            'p_hidden_dims': str(self.args.p_hidden_dims),
-            'p_hidden_layers': self.args.p_hidden_layers,
-            
-            # 指标相关参数
-            'use_dtw': self.args.use_dtw,
-            
-            # 数据增强参数
-            'augmentation_ratio': self.args.augmentation_ratio,
-            'seed': self.args.seed,
-            'jitter': self.args.jitter,
-            'scaling': self.args.scaling,
-            'permutation': self.args.permutation,
-            'randompermutation': self.args.randompermutation,
-            'magwarp': self.args.magwarp,
-            'timewarp': self.args.timewarp,
-            'windowslice': self.args.windowslice,
-            'windowwarp': self.args.windowwarp,
-            'rotation': self.args.rotation,
-            'spawner': self.args.spawner,
-            'dtwwarp': self.args.dtwwarp,
-            'shapedtwwarp': self.args.shapedtwwarp,
-            'wdba': self.args.wdba,
-            'discdtw': self.args.discdtw,
-            'discsdtw': self.args.discsdtw,
-            'extra_tag': self.args.extra_tag,
-            
-            # TimeXer参数
-            'patch_len': self.args.patch_len,
-            
-            # 多模态参数（后续补充）
-            # ...
-            
-            # 实验结果
-            'mae': mae,
-            'mse': mse,
-            'rmse': rmse,
-            'mape': mape,
-            'mspe': mspe,
-            'dtw': dtw
-        }
-
-        # (3) 动态添加多模态参数到结果字典
-        for field in multimodal_fields:
-            # hasattr判断兼容性，部分参数可能在旧模型/旧args中不存在
-            result_dict[field] = getattr(self.args, field, None)
-
-        # (4) CSV文件路径
-        csv_file = './log/long_term_forecast/experiment_results.csv'
-        os.makedirs(os.path.dirname(csv_file), exist_ok=True)
-
-        # (5) 创建新的DataFrame
-        df_new = pd.DataFrame([result_dict])
-
-        # (6) 检查文件是否存在且格式正确
-        if os.path.exists(csv_file):
-            try:
-                df_existing = pd.read_csv(csv_file)
-                # 检查是否有重复列
-                if len(df_existing.columns) != len(set(df_existing.columns)):
-                    print(f"警告：CSV文件 {csv_file} 包含重复列，将重新创建文件")
-                    df_existing = pd.DataFrame()
-            except Exception as e:
-                print(f"读取现有CSV文件时出错：{e}，将重新创建文件")
-                df_existing = pd.DataFrame()
-        else:
-            df_existing = pd.DataFrame()
-
-        # (7) 对齐所有字段，补全旧记录缺失的多模态字段为None
-        all_columns = list(df_new.columns)
-        if not df_existing.empty:
-            for col in all_columns:
-                if col not in df_existing.columns:
-                    df_existing[col] = None
-            for col in df_existing.columns:
-                if col not in all_columns:
-                    df_new[col] = None
-            # 保证列顺序一致
-            df_existing = df_existing[all_columns]
-            df_new = df_new[all_columns]
-
-        # (8) 以setting为主键进行更新或添加
-        if not df_existing.empty:
-            existing_setting = df_existing['setting'].values
-            new_setting = result_dict['setting']
-            if new_setting in existing_setting:
-                setting_index = df_existing[df_existing['setting'] == new_setting].index[0]
-                for col in df_new.columns:
-                    df_existing.loc[setting_index, col] = df_new.iloc[0][col]
-                df_combined = df_existing
-                print(f'更新实验设置: {new_setting}')
-            else:
-                df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-                print(f'添加新实验设置: {new_setting}')
-        else:
-            df_combined = df_new
-            print(f'创建新实验设置: {result_dict["setting"]}')
-
-        # (9) 保存到CSV文件
-        df_combined.to_csv(csv_file, index=False)
-        print(f'实验结果已保存到 {csv_file}')

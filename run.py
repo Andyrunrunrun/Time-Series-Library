@@ -4,7 +4,6 @@ import torch
 import torch.backends
 import pandas as pd
 from exp.exp_long_term_forecasting import Exp_Long_Term_Forecast
-from exp.exp
 from exp.exp_zero_shot_forecasting import Exp_Zero_Shot_Forecast
 from exp.exp_few_shot_forecasting import Exp_Few_Shot_Forecast
 from exp.exp_imputation import Exp_Imputation
@@ -14,6 +13,7 @@ from exp.exp_classification import Exp_Classification
 from utils.print_args import print_args
 import random
 import numpy as np
+from utils.tools import load_content
 
 def str2bool(v):
     if isinstance(v, bool):
