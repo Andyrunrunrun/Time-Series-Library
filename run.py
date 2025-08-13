@@ -102,7 +102,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=10, help='data loader num workers')
     parser.add_argument('--itr', type=int, default=1, help='experiments times')
     parser.add_argument('--train_epochs', type=int, default=10, help='train epochs')
-    parser.add_argument('--batch_size', type=int, default=32, help='batch size of train input data')
+    parser.add_argument('--batch_size', type=int, default=128, help='batch size of train input data')
     parser.add_argument('--patience', type=int, default=3, help='early stopping patience')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='optimizer learning rate')
     parser.add_argument('--des', type=str, default='test', help='exp description')
@@ -170,7 +170,7 @@ if __name__ == '__main__':
     parser.add_argument('--w_out_query', type=str2bool, default=False, help='without query part')
     parser.add_argument('--visualize_embeddings', type=str2bool, default=False, help='visualize embeddings')
     parser.add_argument('--llm_model', type=str, default='GPT2', help='LLM model') # LLAMA, GPT2, BERT
-    parser.add_argument('--llm_dim', type=int, default='768', help='LLM model dimension')# LLama7b:4096; GPT2-small:768; BERT-base:768
+    parser.add_argument('--llm_dim', type=int, default=768, help='LLM model dimension')# LLama7b:4096; GPT2-small:768; BERT-base:768
     parser.add_argument('--stride', type=int, default=8, help='stride')
     parser.add_argument('--padding', type=int, default=8, help='padding')
     parser.add_argument('--llm_layers', type=int, default=1)
@@ -178,12 +178,32 @@ if __name__ == '__main__':
     parser.add_argument('--align_const', type=float, default=0.4)
 
     parser.add_argument('--wo_ts', type=int, default=0, help='without/with Time Series Data 1/0')
-    
+
+    # S2IPLLM
+    parser.add_argument('--add_prompt', type=int, default=0, help='whether to add prompt')
+    parser.add_argument('--add_trainable_prompt', type=int, default=0, help='whether to add trainable prompt')
+    parser.add_argument('--prompt_length', type=int, default=4, help='length of prompt')
+    parser.add_argument('--prompt_init', type=str, default='text_prototype', help='prompt initialization method')
+    parser.add_argument('--sim_coef', type=float, default=-0.05, help='coefficient for similarity loss')
+    parser.add_argument('--pool_size', type=int, default=1000, help='size of memory pool')
+    parser.add_argument('--number_variable', type=int, default=7, help='number of variables')
+    parser.add_argument('--patch_size', type=int, default=16, help='patch size')
+    parser.add_argument('--gpt_layers', type=int, default=6, help='number of GPT layers')
+    parser.add_argument('--tokenization', type=str, default='patch', help='tokenization method')
+    parser.add_argument('--period', type=int, default=24, help='period of time series')
+    parser.add_argument('--training_strategy', type=str, default='none', help='training strategy')
+    parser.add_argument('--decay_fac', type=float, default=0.75, help='decay factor')
+    parser.add_argument('--ln', type=int, default=0, help='use layer normalization')
+    parser.add_argument('--mlp', type=int, default=0, help='use MLP')
+    parser.add_argument('--pretrained', type=bool, default=True, help='use pretrained model')
+    parser.add_argument('--trend_length', type=int, default=96, help='length of trend component')
+    parser.add_argument('--seasonal_length', type=int, default=96, help='length of seasonal component')
+
     # zero-shot forecasting
     parser.add_argument('--target_data', type=str, default='ETTh2', help='target dataset type')
     parser.add_argument('--target_root_path', type=str, default='./data/ETT/', help='root path of the target data file')
     parser.add_argument('--target_data_path', type=str, default='ETTh2.csv', help='target data file')
-        
+
     # few-shot forecasting
     parser.add_argument('--percent', type=float, default=1, help='proportion of in-distribution downstream dataset')
     
