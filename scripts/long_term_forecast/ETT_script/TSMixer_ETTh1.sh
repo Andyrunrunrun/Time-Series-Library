@@ -20,7 +20,8 @@ python -u run.py \
   --dec_in 7 \
   --c_out 7 \
   --des 'Exp' \
-  --itr 1
+  --itr 1 \
+  --draw_mse
 
 python -u run.py \
   --task_name long_term_forecast \

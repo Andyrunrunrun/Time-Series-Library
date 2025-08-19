@@ -24,8 +24,8 @@ python -u run.py \
   --d_ff 32 \
   --des 'Exp' \
   --itr 1 \
-  --top_k 5 
-
+  --top_k 5 \
+  --draw_mse
 
 python -u run.py \
   --task_name long_term_forecast \

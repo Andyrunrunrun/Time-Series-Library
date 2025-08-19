@@ -1,4 +1,5 @@
 export TOKENIZERS_PARALLELISM=false
+export CUDA_VISIBLE_DEVICES=7
 model_name=TimeVLM
 vlm_type=clip
 gpu=0
@@ -44,6 +45,7 @@ python -u run.py \
   --learning_rate $learning_rate \
   --num_workers $num_workers \
   --vlm_type $vlm_type \
+  --draw_mse
 
 python -u run.py \
   --task_name long_term_forecast \
@@ -77,6 +79,7 @@ python -u run.py \
   --learning_rate $learning_rate \
   --num_workers $num_workers \
   --vlm_type $vlm_type \
+  --draw_mse
 
 python -u run.py \
   --task_name long_term_forecast \
@@ -111,6 +114,7 @@ python -u run.py \
   --num_workers $num_workers \
   --dropout 0.3 \
   --vlm_type $vlm_type \
+  --draw_mse
 
 python -u run.py \
   --task_name long_term_forecast \
@@ -144,7 +148,9 @@ python -u run.py \
   --learning_rate $learning_rate \
   --num_workers $num_workers \
   --dropout 0.3 \
-  --vlm_type $vlm_type
+  --vlm_type $vlm_type \
+  --draw_mse
+
 
 
 seq_len=512
@@ -181,6 +187,7 @@ python -u run.py \
   --learning_rate $learning_rate \
   --num_workers $num_workers \
   --vlm_type $vlm_type \
+  --draw_mse
 
 python -u run.py \
   --task_name long_term_forecast \
@@ -214,6 +221,7 @@ python -u run.py \
   --learning_rate $learning_rate \
   --num_workers $num_workers \
   --vlm_type $vlm_type \
+  --draw_mse
 
 python -u run.py \
   --task_name long_term_forecast \
@@ -248,6 +256,7 @@ python -u run.py \
   --num_workers $num_workers \
   --dropout 0.3 \
   --vlm_type $vlm_type \
+  --draw_mse
 
 python -u run.py \
   --task_name long_term_forecast \
@@ -281,4 +290,5 @@ python -u run.py \
   --learning_rate $learning_rate \
   --num_workers $num_workers \
   --dropout 0.3 \
-  --vlm_type $vlm_type
+  --vlm_type $vlm_type \
+  --draw_mse

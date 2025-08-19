@@ -1,6 +1,6 @@
 from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
-from utils.tools import EarlyStopping, adjust_learning_rate, visual
+from utils.tools import EarlyStopping, adjust_learning_rate, visual, EarlyStoppingWithAccelerator
 from utils.metrics import metric
 import torch
 import torch.nn as nn
@@ -9,6 +9,7 @@ import os
 import time
 import warnings
 import numpy as np
+from torch.optim import lr_scheduler
 import pandas as pd
 from utils.dtw_metric import dtw, accelerated_dtw
 from utils.augmentation import run_augmentation, run_augmentation_single
@@ -19,12 +20,28 @@ warnings.filterwarnings('ignore')
 class Exp_Long_Term_Forecast(Exp_Basic):
     def __init__(self, args):
         super(Exp_Long_Term_Forecast, self).__init__(args)
+        if hasattr(args, 'use_accelerator') and args.use_accelerator:
+            try:
+                from accelerate import Accelerator, DeepSpeedPlugin
+                from accelerate import DistributedDataParallelKwargs
+                ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+                if hasattr(args, 'ds_config') and args.ds_config:
+                    deepspeed_plugin = DeepSpeedPlugin(hf_ds_config=args.ds_config)
+                    self.accelerator = Accelerator(kwargs_handlers=[ddp_kwargs], deepspeed_plugin=deepspeed_plugin)
+                else:
+                    self.accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
+            except ImportError:
+                print("Accelerate not available, falling back to standard training")
+                self.accelerator = None
+        else:
+            self.accelerator = None
 
     def _build_model(self):
         model = self.model_dict[self.args.model].Model(self.args).float()
 
         if self.args.use_multi_gpu and self.args.use_gpu:
             model = nn.DataParallel(model, device_ids=self.args.device_ids)
+             
         return model
 
     def _get_data(self, flag):
@@ -32,7 +49,16 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         return data_set, data_loader
 
     def _select_optimizer(self):
-        model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
+        if hasattr(self.args, 'model') and 'TimeLLM' in self.args.model:
+            trained_parameters = []
+            for p in self.model.parameters():
+                if p.requires_grad is True:
+                    trained_parameters.append(p)
+            model_optim = optim.Adam(trained_parameters, lr=self.args.learning_rate)
+        else:
+            model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
+    
+        
         return model_optim
 
     def _select_criterion(self):
@@ -50,27 +76,43 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                                leave=False,
                                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in vali_iterator:
-                batch_x = batch_x.float().to(self.device)
-                batch_y = batch_y.float()
-
-                batch_x_mark = batch_x_mark.float().to(self.device)
-                batch_y_mark = batch_y_mark.float().to(self.device)
+                device = getattr(self, 'accelerator', None)
+                if device and hasattr(device, 'device'):
+                    batch_x = batch_x.float().to(device.device)
+                    batch_y = batch_y.float()
+                    batch_x_mark = batch_x_mark.float().to(device.device)
+                    batch_y_mark = batch_y_mark.float().to(device.device)
+                else:
+                    batch_x = batch_x.float().to(self.device)
+                    batch_y = batch_y.float()
+                    batch_x_mark = batch_x_mark.float().to(self.device)
+                    batch_y_mark = batch_y_mark.float().to(self.device)
 
                 # decoder input
-                dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
-                dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
+                if hasattr(self, 'accelerator') and hasattr(self.accelerator, 'device'):
+                    dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
+                    dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.accelerator.device)
+                else:
+                    dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
+                    dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
+                
                 # encoder - decoder
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
                         outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 else:
                     outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                
                 f_dim = -1 if self.args.features == 'MS' else 0
                 if self.args.model == 'S2IPLLM':
                     outputs,res = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 else:
                     outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+                
+                if hasattr(self, 'accelerator') and hasattr(self.accelerator, 'device'):
+                    batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.accelerator.device)
+                else:
+                    batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
 
                 pred = outputs.detach().cpu()
                 true = batch_y.detach().cpu()
@@ -87,21 +129,44 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         vali_data, vali_loader = self._get_data(flag='val')
         test_data, test_loader = self._get_data(flag='test')
 
-        path = os.path.join(self.args.checkpoints, setting)
-        if not os.path.exists(path):
-            os.makedirs(path)
 
+        path = os.path.join(self.args.checkpoints, setting)
+        if (not hasattr(self, 'accelerator')) or (hasattr(self, 'accelerator') and getattr(self.accelerator, 'is_local_main_process', True)):
+            if not os.path.exists(path):
+                os.makedirs(path)
+    
         time_now = time.time()
 
         train_steps = len(train_loader)
-        early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
+        if  self.accelerator is not None:
+            early_stopping = EarlyStoppingWithAccelerator(accelerator=self.accelerator, patience=self.args.patience, verbose=True)
+        else:
+            early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
 
+        if self.accelerator is not None and  'TimeLLM' in self.args.model:
+            trained_parameters = []
+            for p in self.model.parameters():
+                if p.requires_grad is True:
+                    trained_parameters.append(p)
+
+        if self.accelerator is not None and 'TimeLLM' in self.args.model:
+            if self.args.lradj == 'cosine':
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(model_optim, T_max=20, eta_min=1e-8)
+            else:
+                scheduler = lr_scheduler.OneCycleLR(optimizer=model_optim,
+                                                    steps_per_epoch=train_steps,
+                                                    pct_start=self.args.pct_start,
+                                                    epochs=self.args.train_epochs,
+                                                    max_lr=self.args.learning_rate)
+            train_loader, vali_loader, test_loader, self.model, model_optim, scheduler = self.accelerator.prepare(
+                train_loader, vali_loader, test_loader, self.model, model_optim, scheduler)
+        
         if self.args.use_amp:
             scaler = torch.cuda.amp.GradScaler()
-
+        
         for epoch in range(self.args.train_epochs):
             iter_count = 0
             train_loss = []
@@ -116,23 +181,40 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in train_iterator:
                 iter_count += 1
                 model_optim.zero_grad()
-                batch_x = batch_x.float().to(self.device)
-                batch_y = batch_y.float().to(self.device)
-                batch_x_mark = batch_x_mark.float().to(self.device)
-                batch_y_mark = batch_y_mark.float().to(self.device)
+                
+                if hasattr(self, 'accelerator') and hasattr(self.accelerator, 'device'):
+                    batch_x = batch_x.float().to(self.accelerator.device)
+                    batch_y = batch_y.float().to(self.accelerator.device)
+                    batch_x_mark = batch_x_mark.float().to(self.accelerator.device)
+                    batch_y_mark = batch_y_mark.float().to(self.accelerator.device)
+                else:
+                    batch_x = batch_x.float().to(self.device)
+                    batch_y = batch_y.float().to(self.device)
+                    batch_x_mark = batch_x_mark.float().to(self.device)
+                    batch_y_mark = batch_y_mark.float().to(self.device)
 
                 # decoder input
-                dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
-                dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
+                if hasattr(self, 'accelerator') and hasattr(self.accelerator, 'device'):
+                    dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
+                    dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.accelerator.device)
+                else:
+                    dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
+                    dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
 
                 # encoder - decoder
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
-                        outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                        if self.args.output_attention:
+                            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+                        else:
+                            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
                         f_dim = -1 if self.args.features == 'MS' else 0
                         outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                        batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+                        if hasattr(self, 'accelerator') and hasattr(self.accelerator, 'device'):
+                            batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.accelerator.device)
+                        else:
+                            batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
                         loss = criterion(outputs, batch_y)
                         train_loss.append(loss.item())
                 else:
@@ -146,19 +228,31 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         simlarity_losses.append(res['simlarity_loss'].item())
                         loss += self.args.sim_coef*res['simlarity_loss']
                     else:
-                        outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
-                    
-                    f_dim = -1 if self.args.features == 'MS' else 0
-                    outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                    batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                    loss = criterion(outputs, batch_y)
-                    train_loss.append(loss.item())
+                        if hasattr(self.args, 'output_attention') and self.args.output_attention:
+                            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+                        else:
+                            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                        
+                        f_dim = -1 if self.args.features == 'MS' else 0
+                        outputs = outputs[:, -self.args.pred_len:, f_dim:]
+                        if hasattr(self, 'accelerator') and hasattr(self.accelerator, 'device'):
+                            batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.accelerator.device)
+                        else:
+                            batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+                        loss = criterion(outputs, batch_y)
+                        train_loss.append(loss.item())
 
                 if (i + 1) % 100 == 0:
-                    print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
-                    speed = (time.time() - time_now) / iter_count
-                    left_time = speed * ((self.args.train_epochs - epoch) * train_steps - i)
-                    print('\tspeed: {:.4f}s/iter; left time: {:.4f}s'.format(speed, left_time))
+                    if self.accelerator is not None:
+                        self.accelerator.print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
+                        speed = (time.time() - time_now) / iter_count
+                        left_time = speed * ((self.args.train_epochs - epoch) * train_steps - i)
+                        self.accelerator.print('\tspeed: {:.4f}s/iter; left time: {:.4f}s'.format(speed, left_time))
+                    else:
+                        print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
+                        speed = (time.time() - time_now) / iter_count
+                        left_time = speed * ((self.args.train_epochs - epoch) * train_steps - i)
+                        print('\tspeed: {:.4f}s/iter; left time: {:.4f}s'.format(speed, left_time))
                     iter_count = 0
                     time_now = time.time()
 
@@ -167,10 +261,16 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     scaler.step(model_optim)
                     scaler.update()
                 else:
-                    loss.backward()
+                    if self.accelerator is not None:
+                        self.accelerator.backward(loss)
+                    else:
+                        loss.backward()
                     model_optim.step()
 
-            print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
+            if self.accelerator is not None:
+                self.accelerator.print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
+            else:
+                print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
             if self.args.model == 'S2IPLLM':
                 sim_loss = np.average(simlarity_losses)
@@ -180,18 +280,29 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Sim Loss: {4:.7f}".format(
                     epoch + 1, train_steps, train_loss, vali_loss,sim_loss))
             else: 
-                print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
-                    epoch + 1, train_steps, train_loss, vali_loss, test_loss))
-                
+                if self.accelerator is not None:
+                    self.accelerator.print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
+                        epoch + 1, train_steps, train_loss, vali_loss, test_loss))
+                else:
+                    print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
+                        epoch + 1, train_steps, train_loss, vali_loss, test_loss))
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
-                print("Early stopping")
+                if self.accelerator is not None:
+                    self.accelerator.print("Early stopping")
+                else:
+                    print("Early stopping")
                 break
 
             adjust_learning_rate(model_optim, epoch + 1, self.args)
 
         best_model_path = path + '/' + 'checkpoint.pth'
-        self.model.load_state_dict(torch.load(best_model_path))
+        if self.accelerator is not None:
+            # 如果使用了accelerator，需要unwrap模型来加载
+            unwrapped_model = self.accelerator.unwrap_model(self.model)
+            unwrapped_model.load_state_dict(torch.load(best_model_path))
+        else:
+            self.model.load_state_dict(torch.load(best_model_path))
 
         return self.model
 
@@ -214,28 +325,49 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                                ncols=100,
                                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in test_iterator:
-                batch_x = batch_x.float().to(self.device)
-                batch_y = batch_y.float().to(self.device)
-
-                batch_x_mark = batch_x_mark.float().to(self.device)
-                batch_y_mark = batch_y_mark.float().to(self.device)
+                if hasattr(self.accelerator, 'device'):
+                    batch_x = batch_x.float().to(self.accelerator.device)
+                    batch_y = batch_y.float().to(self.accelerator.device)
+                    batch_x_mark = batch_x_mark.float().to(self.accelerator.device)
+                    batch_y_mark = batch_y_mark.float().to(self.accelerator.device)
+                else:
+                    batch_x = batch_x.float().to(self.device)
+                    batch_y = batch_y.float().to(self.device)
+                    batch_x_mark = batch_x_mark.float().to(self.device)
+                    batch_y_mark = batch_y_mark.float().to(self.device)
 
                 # decoder input
-                dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
-                dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
+                if hasattr(self, 'accelerator') and hasattr(self.accelerator, 'device'):
+                    dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
+                    dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.accelerator.device)
+                else:
+                    dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
+                    dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
+                
                 # encoder - decoder
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
-                        outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                        if self.args.output_attention:
+                            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+                        else:
+                            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 else:
-                    outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                    if self.args.output_attention:
+                        outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+                    else:
+                        outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
                 f_dim = -1 if self.args.features == 'MS' else 0
                 if self.args.model == 'S2IPLLM':
                     outputs,res = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 else:
                     outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                batch_y = batch_y[:, -self.args.pred_len:, :].to(self.device)
+                
+                if hasattr(self, 'accelerator') and hasattr(self.accelerator, 'device'):
+                    batch_y = batch_y[:, -self.args.pred_len:, :].to(self.accelerator.device)
+                else:
+                    batch_y = batch_y[:, -self.args.pred_len:, :].to(self.device)
+                
                 outputs = outputs.detach().cpu().numpy()
                 batch_y = batch_y.detach().cpu().numpy()
                 if test_data.scale and self.args.inverse:
@@ -260,7 +392,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         input = test_data.inverse_transform(input.reshape(shape[0] * shape[1], -1)).reshape(shape)
                     gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
-                    visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
+                    mse_value = float(np.mean((pred[0, :, -1] - true[0, :, -1]) ** 2))
+                    visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'), draw_mse=getattr(self.args, 'draw_mse', False), mse_value=mse_value)
 
         preds = np.concatenate(preds, axis=0)
         trues = np.concatenate(trues, axis=0)

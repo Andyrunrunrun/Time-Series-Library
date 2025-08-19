@@ -10,6 +10,7 @@ from exp.exp_imputation import Exp_Imputation
 from exp.exp_short_term_forecasting import Exp_Short_Term_Forecast
 from exp.exp_anomaly_detection import Exp_Anomaly_Detection
 from exp.exp_classification import Exp_Classification
+
 from utils.print_args import print_args
 import random
 import numpy as np
@@ -109,13 +110,16 @@ if __name__ == '__main__':
     parser.add_argument('--loss', type=str, default='MSE', help='loss function')
     parser.add_argument('--lradj', type=str, default='type1', help='adjust learning rate')
     parser.add_argument('--use_amp', action='store_true', help='use automatic mixed precision training', default=False)
+    parser.add_argument('--use_accelerator', action='store_true', help='use accelerator', default=False)
+    parser.add_argument('--ds_config', type=str, default='./ds_config_zero2.json', help='deepspeed config file')
 
+    # TimeLLM
     # GPU
     parser.add_argument('--use_gpu', type=bool, default=True, help='use gpu')
     parser.add_argument('--gpu', type=int, default=0, help='gpu')
     parser.add_argument('--gpu_type', type=str, default='cuda', help='gpu type')  # cuda or mps
     parser.add_argument('--use_multi_gpu', action='store_true', help='use multiple gpus', default=False)
-    parser.add_argument('--devices', type=str, default='0,1,2,3', help='device ids of multile gpus')
+    parser.add_argument('--devices', type=str, default='1,2', help='device ids of multile gpus')
 
     # de-stationary projector params
     parser.add_argument('--p_hidden_dims', type=int, nargs='+', default=[128, 128],
@@ -125,6 +129,7 @@ if __name__ == '__main__':
     # metrics (dtw)
     parser.add_argument('--use_dtw', type=bool, default=False,
                         help='the controller of using dtw metric (dtw is time consuming, not suggested unless necessary)')
+    parser.add_argument('--draw_mse', action='store_true', default=False, help='draw MSE text under test plots')
 
     # Augmentation
     parser.add_argument('--augmentation_ratio', type=int, default=0, help="How many times to augment")
@@ -198,7 +203,11 @@ if __name__ == '__main__':
     parser.add_argument('--pretrained', type=bool, default=True, help='use pretrained model')
     parser.add_argument('--trend_length', type=int, default=96, help='length of trend component')
     parser.add_argument('--seasonal_length', type=int, default=96, help='length of seasonal component')
-
+    parser.add_argument('--output_attention', action='store_true', help='whether to output attention in encoder')
+    
+    # TimeLLM
+    parser.add_argument('--eval_batch_size', type=int, default=8, help='batch size of model evaluation')
+    parser.add_argument('--pct_start', type=float, default=0.2, help='pct_start')
     # zero-shot forecasting
     parser.add_argument('--target_data', type=str, default='ETTh2', help='target dataset type')
     parser.add_argument('--target_root_path', type=str, default='./data/ETT/', help='root path of the target data file')
@@ -207,7 +216,10 @@ if __name__ == '__main__':
     # few-shot forecasting
     parser.add_argument('--percent', type=float, default=1, help='proportion of in-distribution downstream dataset')
     
+
+    
     args = parser.parse_args()
+    
     if torch.cuda.is_available() and args.use_gpu:
         args.device = torch.device('cuda:{}'.format(args.gpu))
         print('Using GPU')

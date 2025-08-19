@@ -24,7 +24,8 @@ python -u run.py \
   --itr 1 \
   --p_hidden_dims 256 256 \
   --p_hidden_layers 2 \
-  --d_model 128
+  --d_model 128 \
+  --draw_mse
 
 python -u run.py \
   --task_name long_term_forecast \

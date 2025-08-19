@@ -17,3 +17,6 @@ seaborn==0.13.2
 pytorch_wavelets
 tqdm
 statsmodels
+deepspeed==0.14.0
+sentencepiece
+peft==0.4.0

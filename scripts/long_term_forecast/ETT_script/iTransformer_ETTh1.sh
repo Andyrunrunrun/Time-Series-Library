@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=7
 
 model_name=iTransformer
 
@@ -23,7 +23,8 @@ python -u run.py \
   --des 'Exp' \
   --d_model 128 \
   --d_ff 128 \
-  --itr 1
+  --itr 1 \
+  --draw_mse
 
 python -u run.py \
   --task_name long_term_forecast \

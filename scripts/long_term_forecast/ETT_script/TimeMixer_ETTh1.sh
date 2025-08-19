@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=5
 
 model_name=TimeMixer
 
@@ -38,7 +38,8 @@ python -u run.py \
   --batch_size 128 \
   --down_sampling_layers $down_sampling_layers \
   --down_sampling_method avg \
-  --down_sampling_window $down_sampling_window
+  --down_sampling_window $down_sampling_window \
+  --draw_mse
 
 
 python -u run.py \
